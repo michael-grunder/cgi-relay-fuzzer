@@ -9,7 +9,7 @@ class HttpCmd extends HttpRequest {
 
     public function __construct(string $host, int $port, string $cmd) {
         $this->cmd = $cmd;
-        parent::__construct($host, $port, "www/cmd.php");
+        parent::__construct($host, $port, "cmd.php");
     }
 
     public function exec(array $args = []): array {
