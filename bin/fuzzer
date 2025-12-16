@@ -1,0 +1,13 @@
+#!/usr/bin/env php
+<?php
+
+namespace Mgrunder\Fuzzer;
+
+require_once __DIR__ . '/' . '../vendor/autoload.php';
+
+$opt = getopt('', ['host:', 'port:']);
+$host = $opt['host'] ?? '127.0.0.1';
+$port = $opt['port'] ?? 8080;
+
+$get = new HttpCmd($host, $port, 'get');
+print_r($get->exec(['foo']));

@@ -1,0 +1,16 @@
+{
+    "name": "mgrunder/fuzzer",
+    "autoload": {
+        "psr-4": {
+            "Mgrunder\\Fuzzer\\": "src/"
+        }
+    },
+    "authors": [
+        {
+            "name": "michael-grunder",
+            "email": "michael.grunder@gmail.com"
+        }
+    ],
+    "bin": ["bin/fuzzer"],
+    "require": {}
+}
