@@ -3,9 +3,9 @@
 
 namespace Mgrunder\Fuzzer;
 
-require_once __DIR__ . '/' . '../vendor/autoload.php';
+use Mgrunder\Fuzzer\Cmd;
 
-use Mgrunder\Fuzzer\Cmd\Cmd;
+require_once __DIR__ . '/' . '../vendor/autoload.php';
 
 $opt = getopt('', ['host:', 'port:', 'timeout:']);
 $host = $opt['host'] ?? '127.0.0.1';
@@ -20,7 +20,7 @@ for ($i = 0; $i < 100; $i++) {
 
     $res = $cmd->fuzz();
 
-    if (!($cmd->type & Cmd::READ))
+    if (!($cmd->flags() & Cmd\Cmd::READ))
         continue;
 
     print_r($cmd->fuzz());
