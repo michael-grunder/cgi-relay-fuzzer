@@ -4,18 +4,12 @@ namespace Mgrunder\Fuzzer\Cmd;
 
 require_once __DIR__ . '/' . '../../vendor/autoload.php';
 
-class get extends Cmd {
+class get extends KeyCmd {
     public function type(): Type {
         return Type::STRING;
     }
 
     public function flags(): int {
         return self::READ;
-    }
-
-    public function args(): array {
-        return [
-            $this->cfg->randomKey($this->type())
-        ];
     }
 }
