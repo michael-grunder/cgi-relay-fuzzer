@@ -16,6 +16,10 @@ abstract class Cmd extends HttpCmd {
     abstract public function flags(): int;
     abstract public function args(): array;
 
+    public string $name {
+        get => $this->cmd();
+    }
+
     /* We'll just have users name the class the command name */
     private function cmd(): string {
         $parts = explode('\\', static::class);
@@ -29,6 +33,6 @@ abstract class Cmd extends HttpCmd {
     }
 
     public function __construct(protected FuzzConfig $cfg) {
-        parent::__construct($cfg->host, $cfg->port, $this->cmd());
+        parent::__construct($cfg->host, $cfg->port, $this->name);
     }
 }

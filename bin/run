@@ -1,4 +1,4 @@
-#!/usr/bin/env php
+#!../sapi/cli/php
 <?php
 
 namespace Mgrunder\Fuzzer;
@@ -7,6 +7,9 @@ require_once __DIR__ . '/' . '../vendor/autoload.php';
 
 use Mgrunder\Fuzzer\Cmd\get;
 
+
 $cfg = new FuzzConfig('localhost', 8080, 10, 10);
-$obj = new get($cfg);
-print_r($obj->fuzz());
+$reg = new Cmd\Registry($cfg);
+
+$cmd = $reg->randomCmd();
+print_r($cmd->fuzz());
