@@ -5,9 +5,11 @@ namespace Mgrunder\Fuzzer\Cmd;
 require_once __DIR__ . '/' . '../../vendor/autoload.php';
 
 use Mgrunder\Fuzzer\FuzzConfig;
-use Mgrunder\Fuzzer\HttpCmd;
+use Mgrunder\Fuzzer\HttpRequest;
 
-abstract class Cmd extends HttpCmd {
+abstract class Cmd extends HttpRequest {
+    private static $classes = ['redis', 'relay'];
+
     public const READ = (1 << 0);
     public const WRITE = (1 << 1);
     public const DEL = (1 << 2);
@@ -28,15 +30,27 @@ abstract class Cmd extends HttpCmd {
     }
 
     public function fuzz(): array {
-        $res = parent::exec($this->args());
+        $args = [
+            'cmd'  => $this->name,
+            'args' => $this->args(),
+        ];
 
-        $res['cmd'] = $this->name;
-        $res['args'] = $this->args();
+        $res = ['query' => $args];
+
+        $classes = match (!!($this->flags() & Cmd::READ)) {
+            true  => self::$classes,
+            false => [self::$classes[array_rand(self::$classes)]],
+        };
+
+        foreach ($classes as $class) {
+            $args['class'] = $class;
+            $res[$class] = parent::exec($args);
+        }
 
         return $res;
     }
 
     public function __construct(protected FuzzConfig $cfg) {
-        parent::__construct($cfg->host, $cfg->port, $this->name);
+        parent::__construct($cfg->host, $cfg->port, 'cmd.php');
     }
 }

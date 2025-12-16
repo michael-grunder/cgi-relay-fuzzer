@@ -1,13 +1,389 @@
-#!/usr/bin/env php
+#!../sapi/cli/php
 <?php
 
 namespace Mgrunder\Fuzzer;
 
 require_once __DIR__ . '/' . '../vendor/autoload.php';
 
-$opt = getopt('', ['host:', 'port:']);
+use Mgrunder\Fuzzer\Cmd\Cmd;
+
+$opt = getopt('', ['host:', 'port:', 'timeout:']);
 $host = $opt['host'] ?? '127.0.0.1';
 $port = $opt['port'] ?? 8080;
+$timeout = (float)($opt['timeout'] ?? 1.0);
 
-$get = new HttpCmd($host, $port, 'get');
-print_r($get->exec(['foo']));
+$cfg = new FuzzConfig('localhost', 8080, 10, 10);
+$reg = new Cmd\Registry($cfg);
+
+for ($i = 0; $i < 100; $i++) {
+    $cmd = $reg->randomCmd();
+
+    $res = $cmd->fuzz();
+
+    if (!($cmd->type & Cmd::READ))
+        continue;
+
+    print_r($cmd->fuzz());
+}
+
+//array(3) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(3) "get"
+//    ["args"]=>
+//    array(1) {
+//      [0]=>
+//      string(9) "string:10"
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729578)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    bool(false)
+//  }
+//  ["relay"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729578)
+//    ["class"]=>
+//    string(5) "relay"
+//    ["result"]=>
+//    bool(false)
+//  }
+//}
+//array(2) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(3) "del"
+//    ["args"]=>
+//    array(1) {
+//      [0]=>
+//      array(10) {
+//        [0]=>
+//        string(6) "zset:3"
+//        [1]=>
+//        string(6) "list:2"
+//        [2]=>
+//        string(8) "string:6"
+//        [3]=>
+//        string(5) "set:2"
+//        [4]=>
+//        string(6) "zset:6"
+//        [5]=>
+//        string(5) "set:1"
+//        [6]=>
+//        string(8) "string:1"
+//        [7]=>
+//        string(8) "string:4"
+//        [8]=>
+//        string(6) "zset:6"
+//        [9]=>
+//        string(8) "string:6"
+//      }
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729578)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    int(1)
+//  }
+//}
+//array(2) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(7) "flushdb"
+//    ["args"]=>
+//    array(0) {
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    bool(true)
+//  }
+//}
+//array(3) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(3) "get"
+//    ["args"]=>
+//    array(1) {
+//      [0]=>
+//      string(8) "string:2"
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    bool(false)
+//  }
+//  ["relay"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729578)
+//    ["class"]=>
+//    string(5) "relay"
+//    ["result"]=>
+//    bool(false)
+//  }
+//}
+//array(3) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(7) "hgetall"
+//    ["args"]=>
+//    array(1) {
+//      [0]=>
+//      string(6) "hash:9"
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    array(0) {
+//    }
+//  }
+//  ["relay"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "relay"
+//    ["result"]=>
+//    array(0) {
+//    }
+//  }
+//}
+//array(2) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(4) "sadd"
+//    ["args"]=>
+//    array(11) {
+//      [0]=>
+//      string(5) "set:8"
+//      [1]=>
+//      string(9) "member:10"
+//      [2]=>
+//      string(8) "member:9"
+//      [3]=>
+//      string(9) "member:10"
+//      [4]=>
+//      string(8) "member:1"
+//      [5]=>
+//      string(8) "member:3"
+//      [6]=>
+//      string(8) "member:9"
+//      [7]=>
+//      string(9) "member:10"
+//      [8]=>
+//      string(8) "member:2"
+//      [9]=>
+//      string(8) "member:8"
+//      [10]=>
+//      string(8) "member:4"
+//    }
+//  }
+//  ["relay"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "relay"
+//    ["result"]=>
+//    int(7)
+//  }
+//}
+//array(2) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(4) "sadd"
+//    ["args"]=>
+//    array(11) {
+//      [0]=>
+//      string(5) "set:6"
+//      [1]=>
+//      string(8) "member:2"
+//      [2]=>
+//      string(8) "member:6"
+//      [3]=>
+//      string(8) "member:7"
+//      [4]=>
+//      string(9) "member:10"
+//      [5]=>
+//      string(8) "member:2"
+//      [6]=>
+//      string(8) "member:2"
+//      [7]=>
+//      string(8) "member:9"
+//      [8]=>
+//      string(8) "member:9"
+//      [9]=>
+//      string(8) "member:2"
+//      [10]=>
+//      string(8) "member:4"
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    int(6)
+//  }
+//}
+//array(2) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(3) "set"
+//    ["args"]=>
+//    array(2) {
+//      [0]=>
+//      string(8) "string:3"
+//      [1]=>
+//      string(7) "value:1"
+//    }
+//  }
+//  ["relay"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "relay"
+//    ["result"]=>
+//    bool(true)
+//  }
+//}
+//array(2) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(3) "del"
+//    ["args"]=>
+//    array(1) {
+//      [0]=>
+//      array(10) {
+//        [0]=>
+//        string(6) "list:8"
+//        [1]=>
+//        string(6) "zset:9"
+//        [2]=>
+//        string(6) "list:4"
+//        [3]=>
+//        string(5) "set:4"
+//        [4]=>
+//        string(8) "string:7"
+//        [5]=>
+//        string(6) "list:5"
+//        [6]=>
+//        string(6) "list:7"
+//        [7]=>
+//        string(5) "set:1"
+//        [8]=>
+//        string(6) "hash:8"
+//        [9]=>
+//        string(6) "zset:7"
+//      }
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    int(0)
+//  }
+//}
+//array(3) {
+//  ["query"]=>
+//  array(2) {
+//    ["cmd"]=>
+//    string(8) "smembers"
+//    ["args"]=>
+//    array(1) {
+//      [0]=>
+//      string(5) "set:3"
+//    }
+//  }
+//  ["redis"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "redis"
+//    ["result"]=>
+//    array(0) {
+//    }
+//  }
+//  ["relay"]=>
+//  array(4) {
+//    ["status"]=>
+//    string(2) "ok"
+//    ["pid"]=>
+//    int(1729579)
+//    ["class"]=>
+//    string(5) "relay"
+//    ["result"]=>
+//    array(0) {
+//    }
+//  }
+//}
+//
