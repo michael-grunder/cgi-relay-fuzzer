@@ -3,27 +3,57 @@
 
 namespace Mgrunder\Fuzzer;
 
-use Mgrunder\Fuzzer\Cmd;
-
 require_once __DIR__ . '/' . '../vendor/autoload.php';
 
-$opt = getopt('', ['host:', 'port:', 'timeout:']);
+use Mgrunder\Fuzzer\Cmd;
+
+function validateReply(array $reply): bool {
+    return isset($reply['query']) &&
+           isset($reply['redis']) &&
+           isset($reply['relay']);
+}
+
+function randChance(float $percent): bool {
+    if ($percent <= 0.0)
+        return false;
+    else if ($percent >= 100.0)
+        return true;
+
+    return mt_rand() / mt_getrandmax() < ($percent / 100.0);
+}
+
+$opt = getopt('', ['host:', 'port:', 'timeout:', 'delay:', 'kill:']);
 $host = $opt['host'] ?? '127.0.0.1';
 $port = $opt['port'] ?? 8080;
 $timeout = (float)($opt['timeout'] ?? 1.0);
+$delay = (float)($opt['delay'] ?? 0.0);
+$delay_us = (int)($delay * 1_000_000);
+$kill = (float)($opt['kill'] ?? 0.0);
 
 $cfg = new FuzzConfig('localhost', 8080, 10, 10);
 $reg = new Cmd\Registry($cfg);
 
-for ($i = 0; $i < 100; $i++) {
-    $cmd = $reg->randomCmd();
+$clients = new Clients($host, $port);
+var_dump($clients->kill(null));
+die();
 
+for ($i = 0; $i < 100; $i++) {
+    if (randChance($kill)) {
+        $clients->kill(null);
+    }
+
+    $cmd = $reg->randomCmd();
     $res = $cmd->fuzz();
 
     if (!($cmd->flags() & Cmd\Cmd::READ))
         continue;
 
-    print_r($cmd->fuzz());
+    $res = $cmd->fuzz();
+
+    assert(validateReply($res), 'Invalid reply structure');
+
+    if ($delay_us > 0)
+        usleep($delay_us);
 }
 
 //array(3) {

@@ -14,6 +14,7 @@ abstract class Cmd extends HttpRequest {
     public const WRITE = (1 << 1);
     public const DEL = (1 << 2);
     public const FLUSH = (1 << 3);
+    public const ADMIN = (1 << 4);
 
     abstract public function type(): Type;
     abstract public function flags(): int;
