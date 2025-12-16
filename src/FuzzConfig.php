@@ -7,7 +7,7 @@ require_once __DIR__ . '/' . '../vendor/autoload.php';
 use Mgrunder\Fuzzer\Cmd\Type;
 
 final class FuzzConfig {
-    private static int $iteration;
+    private int $iteration = 0;
 
     public function __construct(
         public readonly string $host,
@@ -28,8 +28,22 @@ final class FuzzConfig {
         return $this->keyName($type);
     }
 
-    public function randomValue(): string {
+    public function nextValue(): string {
         return sprintf("value:%d", ++$this->iteration);
+    }
+
+    public function randomField(): string {
+        return sprintf("field:%d", rand(1, $this->members));
+    }
+
+    public function randomFields(): array {
+        $fields = [];
+
+        for ($i = 0; $i < $this->members; $i++) {
+            $fields[] = $this->randomField();
+        }
+
+        return $fields;
     }
 
     public function randomHash(): array {
@@ -37,7 +51,7 @@ final class FuzzConfig {
 
         $mems = rand(1, $this->members);
         for ($i = 0; $i < $mems; $i++) {
-            $hash[$this->randomKey(Type::STRING)] = $this->randomValue();
+            $hash[$this->randomField()] = $this->nextValue();
         }
 
         return $hash;
