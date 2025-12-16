@@ -8,6 +8,7 @@ class HttpCmd extends HttpRequest {
     private string $cmd;
 
     public function __construct(string $host, int $port, string $cmd) {
+        $this->cmd = $cmd;
         parent::__construct($host, $port, "www/cmd.php");
     }
 
@@ -22,7 +23,7 @@ class HttpCmd extends HttpRequest {
 
         foreach (['redis', 'relay'] as $class) {
             $args['class'] = $class;
-            $res[] = $this->exec($args);
+            $res[] = parent::exec($args);
         }
 
         return $res;
