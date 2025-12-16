@@ -23,7 +23,7 @@ class HttpCmd extends HttpRequest {
 
         foreach (['redis', 'relay'] as $class) {
             $args['class'] = $class;
-            $res[] = parent::exec($args);
+            $res[$class] = parent::exec($args);
         }
 
         return $res;

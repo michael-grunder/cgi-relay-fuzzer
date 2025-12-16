@@ -23,7 +23,9 @@ abstract class Cmd extends HttpCmd {
     }
 
     public function fuzz(): array {
-        return parent::exec($this->args());
+        $res = parent::exec($this->args());
+        $res['args'] = $this->args();
+        return $res;
     }
 
     public function __construct(protected FuzzConfig $cfg) {
