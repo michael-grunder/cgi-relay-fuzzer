@@ -38,6 +38,21 @@ final class FuzzConfig {
         return $keys;
     }
 
+    public function randomMember(): string {
+        return sprintf("member:%d", rand(1, $this->members));
+    }
+
+    /** @return string[] */
+    public function randomMembers(): array {
+        $members = [];
+
+        for ($i = 0; $i < $this->members; $i++) {
+            $members[] = $this->randomMember();
+        }
+
+        return $members;
+    }
+
     public function nextValue(): string {
         return sprintf("value:%d", ++$this->iteration);
     }
