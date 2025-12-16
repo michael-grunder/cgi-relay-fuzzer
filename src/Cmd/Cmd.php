@@ -28,7 +28,10 @@ abstract class Cmd extends HttpCmd {
 
     public function fuzz(): array {
         $res = parent::exec($this->args());
+
+        $res['cmd'] = $this->name;
         $res['args'] = $this->args();
+
         return $res;
     }
 

@@ -7,6 +7,8 @@ require_once __DIR__ . '/' . '../vendor/autoload.php';
 use Mgrunder\Fuzzer\Cmd\Type;
 
 final class FuzzConfig {
+    private static int $iteration;
+
     public function __construct(
         public readonly string $host,
         public readonly int $port,
@@ -24,5 +26,9 @@ final class FuzzConfig {
             $type = Type::any();
 
         return $this->keyName($type);
+    }
+
+    public function randomValue(): string {
+        return sprintf("value:%d", ++$this->iteration);
     }
 }
