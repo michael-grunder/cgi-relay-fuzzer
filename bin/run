@@ -11,7 +11,7 @@ use Mgrunder\Fuzzer\Cmd\get;
 $cfg = new FuzzConfig('localhost', 8080, 10, 10);
 $reg = new Cmd\Registry($cfg);
 
-for ($i = 0; $i < 5; $i++) {
+for ($i = 0; $i < 100; $i++) {
     $cmd = $reg->randomCmd();
     print_r($cmd->fuzz());
 }

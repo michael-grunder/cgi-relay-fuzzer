@@ -10,7 +10,8 @@ use Mgrunder\Fuzzer\HttpCmd;
 abstract class Cmd extends HttpCmd {
     public const READ = (1 << 0);
     public const WRITE = (1 << 1);
-    public const FLUSH = (1 << 2);
+    public const DEL = (1 << 2);
+    public const FLUSH = (1 << 3);
 
     abstract public function type(): Type;
     abstract public function flags(): int;

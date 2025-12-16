@@ -28,6 +28,16 @@ final class FuzzConfig {
         return $this->keyName($type);
     }
 
+    public function randomKeys(Type $type): array {
+        $keys = [];
+
+        for ($i = 0; $i < $this->keys; $i++) {
+            $keys[] = $this->randomKey($type);
+        }
+
+        return $keys;
+    }
+
     public function nextValue(): string {
         return sprintf("value:%d", ++$this->iteration);
     }
