@@ -31,4 +31,15 @@ final class FuzzConfig {
     public function randomValue(): string {
         return sprintf("value:%d", ++$this->iteration);
     }
+
+    public function randomHash(): array {
+        $hash = [];
+
+        $mems = rand(1, $this->members);
+        for ($i = 0; $i < $mems; $i++) {
+            $hash[$this->randomKey(Type::STRING)] = $this->randomValue();
+        }
+
+        return $hash;
+    }
 }
