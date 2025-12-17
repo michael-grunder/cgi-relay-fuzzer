@@ -20,3 +20,15 @@ inspect the available fuzz commands and their groupings via:
 ```
 bin/fuzzer --list-commands
 ```
+
+### Manually issuing commands
+
+Use `bin/cmd` to talk to the `public/cmd.php` endpoint without juggling curl
+invocations. It accepts the target client class, command, and any number of
+arguments:
+
+```
+bin/cmd relay ping
+bin/cmd redis set mykey myvalue
+bin/cmd --url=http://127.0.0.1:8080/cmd.php relay del mykey otherkey
+```

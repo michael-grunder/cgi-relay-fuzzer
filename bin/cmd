@@ -1,0 +1,210 @@
+#!../sapi/cli/php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Small helper to hit the local cmd.php endpoint with array arguments.
+ */
+final class CmdClient
+{
+    private string $baseUrl;
+    private float $timeout;
+
+    public function __construct(array $options)
+    {
+        $this->timeout = (float) $options['timeout'];
+
+        if ($options['url'] !== null) {
+            $this->baseUrl = rtrim($options['url'], '&?');
+            return;
+        }
+
+        $path = $options['path'];
+        if ($path === '' || $path[0] !== '/') {
+            $path = '/' . $path;
+        }
+
+        $this->baseUrl = sprintf(
+            '%s://%s:%d%s',
+            $options['scheme'],
+            $options['host'],
+            $options['port'],
+            $path
+        );
+    }
+
+    public function request(string $class, string $command, array $arguments): void
+    {
+        $query = http_build_query([
+            'class' => $class,
+            'cmd' => $command,
+            'args' => $arguments,
+        ], '', '&', PHP_QUERY_RFC3986);
+
+        $url = $this->baseUrl . (str_contains($this->baseUrl, '?') ? '&' : '?') . $query;
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'timeout' => $this->timeout,
+                'ignore_errors' => true,
+                'header' => [
+                    'Accept: application/json',
+                ],
+            ],
+        ]);
+
+        $body = @file_get_contents($url, false, $context);
+        if ($body === false || !isset($http_response_header)) {
+            fwrite(STDERR, sprintf("Request failed when contacting %s\n", $url));
+            exit(1);
+        }
+
+        $status = $this->extractStatusCode($http_response_header[0] ?? '');
+
+        $data = json_decode($body, true);
+        if (json_last_error() === JSON_ERROR_NONE) {
+            echo json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES) . PHP_EOL;
+        } else {
+            echo $body . PHP_EOL;
+        }
+
+        if ($status >= 400) {
+            exit(1);
+        }
+    }
+
+    private function extractStatusCode(string $statusLine): int
+    {
+        if (preg_match('{HTTP/\S+\s+(\d+)}', $statusLine, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return 0;
+    }
+}
+
+final class CmdCli
+{
+    private const DEFAULT_OPTIONS = [
+        'url' => null,
+        'scheme' => 'http',
+        'host' => '127.0.0.1',
+        'port' => 8080,
+        'path' => '/cmd.php',
+        'timeout' => 5.0,
+    ];
+
+    public function run(array $argv): void
+    {
+        array_shift($argv); // drop script name
+
+        $options = self::DEFAULT_OPTIONS;
+        $argv = $this->parseOptions($argv, $options);
+
+        if (count($argv) < 2) {
+            $this->usage('Missing required <class> and <command> arguments.');
+        }
+
+        $class = array_shift($argv);
+        $command = array_shift($argv);
+        $arguments = array_values($argv);
+
+        (new CmdClient($options))->request($class, $command, $arguments);
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function parseOptions(array $argv, array &$options): array
+    {
+        while ($argv !== [] && $argv[0] !== '--' && str_starts_with($argv[0], '--')) {
+            $arg = array_shift($argv);
+            $value = null;
+
+            if (str_contains($arg, '=')) {
+                [$arg, $value] = explode('=', (string) $arg, 2);
+            }
+
+            switch ($arg) {
+                case '--help':
+                    $this->printHelp();
+                    exit(0);
+                case '--url':
+                    $options['url'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--scheme':
+                    $options['scheme'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--host':
+                    $options['host'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--port':
+                    $options['port'] = (int) $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--path':
+                    $options['path'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--timeout':
+                    $options['timeout'] = (float) $this->requireValue($arg, $value, $argv);
+                    break;
+                default:
+                    $this->usage(sprintf('Unknown option: %s', $arg));
+            }
+        }
+
+        if ($argv !== [] && $argv[0] === '--') {
+            array_shift($argv);
+        }
+
+        return $argv;
+    }
+
+    private function requireValue(string $option, ?string $value, array &$argv): string
+    {
+        if ($value === null) {
+            if ($argv === []) {
+                $this->usage(sprintf('Missing value for %s.', $option));
+            }
+
+            $value = array_shift($argv);
+        }
+
+        return $value;
+    }
+
+    private function usage(string $message): void
+    {
+        fwrite(STDERR, $message . PHP_EOL);
+        $this->printHelp();
+        exit(1);
+    }
+
+    private function printHelp(): void
+    {
+        $help = <<<HELP
+Usage:
+  bin/cmd [options] <class> <command> [arg...]
+
+Options:
+  --host <host>        Defaults to 127.0.0.1
+  --port <port>        Defaults to 8080
+  --path <path>        Defaults to /cmd.php
+  --scheme <scheme>    Defaults to http
+  --url <url>          Override entire base URL (e.g. http://127.0.0.1:8080/cmd.php)
+  --timeout <seconds>  HTTP timeout, defaults to 5 seconds
+  --help               Display this help
+
+Examples:
+  bin/cmd relay ping
+  bin/cmd redis set mykey myvalue
+  bin/cmd --url=http://127.0.0.1:8080/cmd.php relay del mykey otherkey
+
+HELP;
+
+        fwrite(STDERR, $help);
+    }
+}
+
+(new CmdCli())->run($_SERVER['argv']);
