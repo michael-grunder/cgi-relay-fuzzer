@@ -25,7 +25,7 @@ function randChance(float $percent): bool {
 }
 
 $opt = getopt('', ['host:', 'port:', 'grace-period:', 'delay:', 'kill:',
-                   'flush', 'del', 'trim:', 'keys:', 'mems:']);
+                   'flush', 'del', 'trim:', 'keys:', 'mems:', 'verbose']);
 $host = $opt['host'] ?? '127.0.0.1';
 $port = $opt['port'] ?? 8080;
 $grace = (float)($opt['grace-period'] ?? 1.0);
@@ -37,6 +37,7 @@ $del = isset($opt['del']);
 $trim = (int)($opt['trim'] ?? -1);
 $keys = (int)($opt['keys'] ?? 100);
 $mems = (int)($opt['mems'] ?? 100);
+$verbose = isset($opt['verbose']);
 
 $totals = [];
 $t1 = $st = microtime(true);
@@ -124,9 +125,10 @@ while (++$it) {
         printf("%s Totals: %s\n", str_pad('', strlen($preamble), ' '),
                json_encode($totals));
         printf("%s Relay IDs: [%s]\n", $preamble, implode(', ', $clients->ids()));
-        printf("%s Last result: %s === %s\n", str_pad('', strlen($preamble), ' '),
-               json_encode($redis_res, true), json_encode($relay_res, true));
-        printf("%s Redis Memory: %s, Relay: [%s/%s]\n\n",
+        if ($verbose)
+            printf("%s Last result: %s === %s\n", str_pad('', strlen($preamble), ' '),
+                   json_encode($redis_res, true), json_encode($relay_res, true));
+        printf("%s Redis Memory: %s, Relay: [%s/%s]\n",
                str_pad('', strlen($preamble), ' '),
                $redis_used_mem, number_format($relay_used_mem),
                number_format($relay_total_mem));
