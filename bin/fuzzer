@@ -26,7 +26,7 @@ function randChance(float $percent): bool {
 
 $opt = getopt('', [
     'host:', 'port:', 'grace-period:', 'delay:', 'kill:', 'flush', 'del',
-    'trim:', 'keys:', 'mems:', 'verbose'
+    'trim:', 'keys:', 'mems:', 'verbose', 'list-commands',
 ]);
 
 $host = $opt['host'] ?? '127.0.0.1';
@@ -41,6 +41,7 @@ $trim = (int)($opt['trim'] ?? -1);
 $keys = (int)($opt['keys'] ?? 100);
 $mems = (int)($opt['mems'] ?? 100);
 $verbose = isset($opt['verbose']);
+$list_commands = isset($opt['list-commands']);
 
 $totals = [];
 $t1 = $st = microtime(true);
@@ -50,12 +51,28 @@ $kills = 0;
 $trimmed = 0;
 
 $cfg = new FuzzConfig('localhost', 8080, $keys, $mems);
-$reg = new Cmd\Registry($cfg, $flush, $del);
 $clients = new Clients($host, $port);
 $trimmer = new Trimmer($trim);
 $stats = new Stats($host, $port);
 $redis = new \Redis(['host' => 'localhost', 'port' => 6379]);
 
+if ($list_commands) {
+    $reg = new Cmd\Registry($cfg, true, true);
+    $groups = [];
+    foreach ($reg->commands() as $cmd) {
+        $groups[$cmd->type()->value][] = $cmd;
+    }
+
+    ksort($groups);
+
+    foreach ($groups as $group => $cmds) {
+        $names = array_map(fn($c) => $c->name, $cmds);
+        printf("%s: %s\n", strtoupper($group), implode(', ', $names));
+    }
+    exit(1);
+}
+
+$reg = new Cmd\Registry($cfg, $flush, $del);
 printf("Commands: %s\n", implode(', ', $reg->commandNames()));
 printf("Starting fuzzing against %s:%d\n\n", $host, $port);
 
