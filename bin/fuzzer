@@ -49,6 +49,7 @@ $cfg = new FuzzConfig('localhost', 8080, $keys, $mems);
 $reg = new Cmd\Registry($cfg, $flush, $del);
 $clients = new Clients($host, $port);
 $trimmer = new Trimmer($trim);
+$stats = new Stats($host, $port);
 $redis = new \Redis(['host' => 'localhost', 'port' => 6379]);
 
 printf("Commands: %s\n", implode(', ', $reg->commandNames()));
@@ -59,7 +60,6 @@ printf("Keys: %d, Members: %d, Grace Period: %.2f sec, Delay: %.2f sec, Kill Cha
        $keys, $mems, $grace, $delay, $kill, $trim, $flush ? 'Yes' : 'No',
        $del ? 'Yes' : 'No'
 );
-
 
 while (++$it) {
     if (randChance($kill)) {
@@ -105,7 +105,19 @@ while (++$it) {
         arsort($totals);
 
         $info = $redis->info();
-        $used_mem = $info['used_memory_human'] ?? 'N/A';
+        $redis_used_mem = $info['used_memory_human'] ?? 'N/A';
+
+        $info = $stats->exec([]);
+        [$relay_used_mem, $relay_total_mem] = [
+            $info['memory']['used'],
+            $info['memory']['total']
+        ];
+
+        [$relay_requests, $relay_hits, $relay_misses] = [
+            $info['stats']['requests'],
+            $info['stats']['hits'],
+            $info['stats']['misses']
+        ];
 
         printf("%s Commands (%.2f/sec). Retries: %d, Kills: %d, Trimmed: %d\n",
                $preamble, $it / ($et - $t1), $retries, $kills, $trimmed);
@@ -114,8 +126,16 @@ while (++$it) {
         printf("%s Relay IDs: [%s]\n", $preamble, implode(', ', $clients->ids()));
         printf("%s Last result: %s === %s\n", str_pad('', strlen($preamble), ' '),
                json_encode($redis_res, true), json_encode($relay_res, true));
-        printf("%s Used Memory: %s\n\n", str_pad('', strlen($preamble), ' '),
-               $used_mem);
+        printf("%s Redis Memory: %s, Relay: [%s/%s]\n\n",
+               str_pad('', strlen($preamble), ' '),
+               $redis_used_mem, number_format($relay_used_mem),
+               number_format($relay_total_mem));
+        printf("%s Relay Requests: %s, Hits: %s, Misses: %s\n\n",
+               str_pad('', strlen($preamble), ' '),
+               number_format($relay_requests),
+               number_format($relay_hits),
+               number_format($relay_misses)
+        );
         $st = $et;
     }
 
