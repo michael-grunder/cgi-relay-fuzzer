@@ -228,15 +228,17 @@ class FuzzCommand extends Command
             ['Relay Client IDs' => $clientIds ? implode(', ', $clientIds) : 'None']
         );
 
-        arsort($totals);
-        $top = array_slice($totals, 0, 10, true);
-        if ($top) {
-            $io->text('Command distribution (top 10):');
-            $rows = [];
-            foreach ($top as $name => $count) {
-                $rows[] = [$name, number_format($count)];
+        if ($io->isVerbose()) {
+            arsort($totals);
+            $top = array_slice($totals, 0, 10, true);
+            if ($top) {
+                $io->text('Command distribution (top 10):');
+                $rows = [];
+                foreach ($top as $name => $count) {
+                    $rows[] = [$name, number_format($count)];
+                }
+                $io->table(['Command', 'Count'], $rows);
             }
-            $io->table(['Command', 'Count'], $rows);
         }
 
         if ($showLast && $lastRedisResult !== null) {
