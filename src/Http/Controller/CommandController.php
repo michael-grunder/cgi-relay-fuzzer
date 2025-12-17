@@ -53,13 +53,14 @@ final class CommandController
         }
 
         try {
-            $client->connect('localhost', 6379);
             $arguments = $this->normalizeArguments($client, $command, $args);
             $result = $client->$command(...$arguments);
+            $id = $client->client('ID');
 
             return JsonResponseFactory::payload([
                 'status' => 'ok',
                 'pid' => getmypid(),
+                'client_id' => $id,
                 'class' => $class,
                 'result' => $result,
             ]);
@@ -71,11 +72,10 @@ final class CommandController
         }
     }
 
-    private function createClient(string $class): \Relay\Relay|\Redis|null
-    {
+    private function createClient(string $class): \Relay\Relay|\Redis|null {
         return match ($class) {
-            'relay' => new \Relay\Relay(),
-            'redis' => new \Redis(),
+            'relay' => new \Relay\Relay('localhost', 6379),
+            'redis' => new \Redis(['host' => 'localhost', 'port' => 6379]),
             default => null,
         };
     }
