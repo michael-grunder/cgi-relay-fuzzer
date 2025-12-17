@@ -1,18 +1,12 @@
 <?php
 
-if (php_sapi_name() !== 'cli')
-    header('Content-Type: application/json');
+declare(strict_types=1);
 
-try {
-    $redis = new \Redis(['host' => 'localhost', 'port' => 6379]);
+use Mgrunder\Fuzzer\Http\Controller\ClientsController;
+use Symfony\Component\HttpFoundation\Request;
 
-    $clients = array_filter(
-        $redis->client('list'),
-        fn ($v) => $v['lib-name'] === 'relay'
-    );
+require dirname(__DIR__) . '/vendor/autoload.php';
 
-    echo json_encode($clients, JSON_PRETTY_PRINT) . "\n";
-} catch (\Exception $e) {
-    http_response_code(500);
-    echo json_encode(['error' => $e->getMessage()]) . "\n";
-}
+$request = Request::createFromGlobals();
+$response = (new ClientsController())($request);
+$response->send();

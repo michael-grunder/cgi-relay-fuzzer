@@ -1,8 +1,17 @@
 <?php
+
+declare(strict_types=1);
+
+use Mgrunder\Fuzzer\Http\Controller\StatsController;
+use Symfony\Component\HttpFoundation\Request;
+
 if (PHP_SAPI === 'cli') {
     fprintf(STDERR, "This script is intended to be run from a web server.\n");
     exit(1);
 }
 
-header('Content-Type: application/json');
-echo json_encode(\Relay\Relay::stats());
+require dirname(__DIR__) . '/vendor/autoload.php';
+
+$request = Request::createFromGlobals();
+$response = (new StatsController())($request);
+$response->send();
