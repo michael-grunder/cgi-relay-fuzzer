@@ -24,8 +24,11 @@ function randChance(float $percent): bool {
     return mt_rand() / mt_getrandmax() < ($percent / 100.0);
 }
 
-$opt = getopt('', ['host:', 'port:', 'grace-period:', 'delay:', 'kill:',
-                   'flush', 'del', 'trim:', 'keys:', 'mems:', 'verbose']);
+$opt = getopt('', [
+    'host:', 'port:', 'grace-period:', 'delay:', 'kill:', 'flush', 'del',
+    'trim:', 'keys:', 'mems:', 'verbose'
+]);
+
 $host = $opt['host'] ?? '127.0.0.1';
 $port = $opt['port'] ?? 8080;
 $grace = (float)($opt['grace-period'] ?? 1.0);
