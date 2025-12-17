@@ -34,31 +34,61 @@ $kill = (float)($opt['kill'] ?? 0.0);
 
 $cfg = new FuzzConfig('localhost', 8080, 10, 10);
 $reg = new Cmd\Registry($cfg);
-
 $clients = new Clients($host, $port);
-
+$totals = [];
+$t1 = $st = microtime(true);
 $it = 0;
+$retries = 0;
+$kills = 0;
+
 while (++$it) {
     if (randChance($kill)) {
-        $clients->kill(null);
+        $kills += $clients->kill(null);
     }
 
     $cmd  = $reg->randomCmd();
     $args = $cmd->nextArgs();
 
+    if ( ! isset($totals[$cmd->name]))
+        $totals[$cmd->name] = 0;
+    $totals[$cmd->name] += 1;
+
+    $cmd_time  = microtime(true);
     $res = $cmd->exec($args);
 
     if (!($cmd->flags() & Cmd\Cmd::READ)) {
         continue;
     }
 
-    $st  = microtime(true);
-
     assert(validateReply($res), 'Invalid reply structure');
 
-    if ($res['relay']['result'] !== $res['redis']['result']) {
-        var_dump($res);
-        throw new \RuntimeException('Data mismatch between Redis and Relay');
+    do {
+        $relay_res = $res['relay']['result'];
+        $redis_res = $res['redis']['result'];
+        if ($relay_res === $redis_res)
+            break;
+
+        $retries += 1;
+        usleep(10_000);
+    } while (microtime(true) - $cmd_time < $grace);
+
+    if ($relay_res !== $redis_res) {
+        printf("[%d] Mismatch\n", $it);
+        print_r($res);
+        exit(1);
+    }
+
+    if (($et = microtime(true)) - $st >= 1.0) {
+        $preamble = sprintf("[%d]", $it);
+        arsort($totals);
+
+        printf("%s Commands (%.2f/sec). Retries: %d, Kills: %d\n", $preamble,
+               $it / ($et - $t1), $retries, $kills);
+        printf("%s Totals: %s\n", str_pad('', strlen($preamble), ' '),
+               json_encode($totals));
+        printf("%s Last result: %s === %s\n", str_pad('', strlen($preamble), ' '),
+               json_encode($redis_res, true), json_encode($relay_res, true));
+        $st = $et;
     }
 
     if ($delay_us > 0)

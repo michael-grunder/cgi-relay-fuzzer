@@ -24,6 +24,15 @@ abstract class Cmd extends HttpRequest {
         return $res;
     }
 
+    protected static function cannonicalizeArray(mixed $res): mixed {
+        if ( ! is_array($res))
+            return $res;
+
+        sort($res);
+
+        return $res;
+    }
+
     public string $name {
         get => $this->cmd();
     }

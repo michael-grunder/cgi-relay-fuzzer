@@ -12,4 +12,8 @@ class hgetall extends KeyCmd {
     public function flags(): int {
         return self::READ;
     }
+
+    protected function cannonicalize(mixed $res): mixed {
+        return self::cannonicalizeArray($res);
+    }
 }

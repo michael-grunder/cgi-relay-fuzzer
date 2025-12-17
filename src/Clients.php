@@ -28,16 +28,21 @@ class Clients extends HttpRequest {
     }
 
     public function kill(?int $num): int {
-        $res = 0;
+        $total = 0;
 
         $ids   = array_flip($this->ids());
+        if ( ! $ids)
+            return 0;
+
         $num ??= rand(1, count($ids));
         $ids   = array_rand($ids, $num);
+        if ( ! is_array($ids))
+            $ids = [$ids];
 
         foreach ($ids as $id) {
-            $res += $this->redis->rawCommand('CLIENT', 'KILL', 'ID', $id);
+            $total += $this->redis->rawCommand('CLIENT', 'KILL', 'ID', $id);
         }
 
-        return $res;
+        return $total;
     }
 }

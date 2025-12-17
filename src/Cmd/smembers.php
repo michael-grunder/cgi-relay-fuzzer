@@ -19,12 +19,7 @@ class smembers extends KeyCmd {
         ];
     }
 
-    public function cannonicalize(mixed $res): mixed {
-        if ( ! is_array($res))
-            return $res;
-
-        sort($res);
-
-        return $res;
+    protected function cannonicalize(mixed $res): mixed {
+        return self::cannonicalizeArray($res);
     }
 }
