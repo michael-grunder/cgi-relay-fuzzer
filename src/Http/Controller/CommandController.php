@@ -54,7 +54,8 @@ final class CommandController
 
         try {
             $client->connect('localhost', 6379);
-            $result = $client->$command(...$args);
+            $arguments = $this->normalizeArguments($client, $command, $args);
+            $result = $client->$command(...$arguments);
 
             return JsonResponseFactory::payload([
                 'status' => 'ok',
@@ -75,6 +76,82 @@ final class CommandController
         return match ($class) {
             'relay' => new \Relay\Relay(),
             'redis' => new \Redis(),
+            default => null,
+        };
+    }
+
+    /**
+     * Attempt to coerce string query arguments into the expected parameter
+     * types so that methods requiring ints/bools do not throw type errors.
+     *
+     * @param array<int, mixed> $args
+     * @return array<int, mixed>
+     */
+    private function normalizeArguments(\Relay\Relay|\Redis $client, string $command, array $args): array
+    {
+        try {
+            $method = new \ReflectionMethod($client, $command);
+        } catch (\ReflectionException) {
+            return $args;
+        }
+
+        $parameters = $method->getParameters();
+        foreach ($parameters as $index => $parameter) {
+            if ($parameter->isVariadic()) {
+                for ($i = $index; $i < count($args); $i++) {
+                    $args[$i] = $this->coerceArgument($args[$i], $parameter);
+                }
+                break;
+            }
+
+            if (!array_key_exists($index, $args)) {
+                continue;
+            }
+
+            $args[$index] = $this->coerceArgument($args[$index], $parameter);
+        }
+
+        return $args;
+    }
+
+    private function coerceArgument(mixed $value, \ReflectionParameter $parameter): mixed
+    {
+        if (!is_string($value)) {
+            return $value;
+        }
+
+        $type = $parameter->getType();
+
+        if ($type instanceof \ReflectionNamedType) {
+            return $this->castValue($value, $type) ?? $value;
+        }
+
+        if ($type instanceof \ReflectionUnionType) {
+            foreach ($type->getTypes() as $named) {
+                if (!$named instanceof \ReflectionNamedType) {
+                    continue;
+                }
+
+                $cast = $this->castValue($value, $named);
+                if ($cast !== null) {
+                    return $cast;
+                }
+            }
+        }
+
+        return $value;
+    }
+
+    private function castValue(string $value, \ReflectionNamedType $type): mixed
+    {
+        if (!$type->isBuiltin()) {
+            return null;
+        }
+
+        return match ($type->getName()) {
+            'int' => filter_var($value, FILTER_VALIDATE_INT) !== false ? (int) $value : null,
+            'float' => is_numeric($value) ? (float) $value : null,
+            'bool' => filter_var($value, FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE),
             default => null,
         };
     }
