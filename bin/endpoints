@@ -1,0 +1,335 @@
+#!../sapi/cli/php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Helper to fetch Relay endpoint stats and render the connections as a table.
+ */
+final class EndpointsClient
+{
+    private string $baseUrl;
+    private float $timeout;
+
+    public function __construct(array $options)
+    {
+        $this->timeout = (float) $options['timeout'];
+
+        if ($options['url'] !== null) {
+            $this->baseUrl = rtrim($options['url'], '&?');
+            return;
+        }
+
+        $path = $options['path'];
+        if ($path === '' || $path[0] !== '/') {
+            $path = '/' . $path;
+        }
+
+        $this->baseUrl = sprintf(
+            '%s://%s:%d%s',
+            $options['scheme'],
+            $options['host'],
+            $options['port'],
+            $path
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function fetch(): array
+    {
+        $url = $this->baseUrl . (str_contains($this->baseUrl, '?') ? '&' : '?') . 'format=json';
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'timeout' => $this->timeout,
+                'ignore_errors' => true,
+                'header' => [
+                    'Accept: application/json',
+                ],
+            ],
+        ]);
+
+        $body = @file_get_contents($url, false, $context);
+        if ($body === false || !isset($http_response_header)) {
+            fwrite(STDERR, sprintf("Request failed when contacting %s\n", $url));
+            exit(1);
+        }
+
+        $status = $this->extractStatusCode($http_response_header[0] ?? '');
+        if ($status >= 400) {
+            fwrite(STDERR, sprintf("Endpoint responded with HTTP %d\n", $status));
+            exit(1);
+        }
+
+        $data = json_decode($body, true);
+        if (!is_array($data)) {
+            fwrite(STDERR, "Failed to decode JSON response.\n");
+            exit(1);
+        }
+
+        return $data;
+    }
+
+    private function extractStatusCode(string $statusLine): int
+    {
+        if (preg_match('{HTTP/\\S+\\s+(\\d+)}', $statusLine, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return 0;
+    }
+}
+
+final class EndpointsCli
+{
+    private const DEFAULT_OPTIONS = [
+        'url' => null,
+        'scheme' => 'http',
+        'host' => '127.0.0.1',
+        'port' => 8080,
+        'path' => '/endpoints.php',
+        'timeout' => 5.0,
+    ];
+
+    public function run(array $argv): void
+    {
+        array_shift($argv);
+
+        $options = self::DEFAULT_OPTIONS;
+        $this->parseOptions($argv, $options);
+
+        $data = (new EndpointsClient($options))->fetch();
+        $this->printTable($data);
+    }
+
+    private function parseOptions(array &$argv, array &$options): void
+    {
+        while ($argv !== [] && $argv[0] !== '--' && str_starts_with($argv[0], '--')) {
+            $arg = array_shift($argv);
+            $value = null;
+
+            if (str_contains($arg, '=')) {
+                [$arg, $value] = explode('=', (string) $arg, 2);
+            }
+
+            switch ($arg) {
+                case '--help':
+                    $this->printHelp();
+                    exit(0);
+                case '--url':
+                    $options['url'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--scheme':
+                    $options['scheme'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--host':
+                    $options['host'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--port':
+                    $options['port'] = (int) $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--path':
+                    $options['path'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--timeout':
+                    $options['timeout'] = (float) $this->requireValue($arg, $value, $argv);
+                    break;
+                default:
+                    $this->usage(sprintf('Unknown option: %s', $arg));
+            }
+        }
+
+        if ($argv !== [] && $argv[0] === '--') {
+            array_shift($argv);
+        }
+    }
+
+    private function requireValue(string $option, ?string $value, array &$argv): string
+    {
+        if ($value === null) {
+            if ($argv === []) {
+                $this->usage(sprintf('Missing value for %s.', $option));
+            }
+
+            $value = array_shift($argv);
+        }
+
+        return $value;
+    }
+
+    private function usage(string $message): void
+    {
+        fwrite(STDERR, $message . PHP_EOL);
+        $this->printHelp();
+        exit(1);
+    }
+
+    private function printHelp(): void
+    {
+        $help = <<<HELP
+Usage:
+  bin/endpoints [options]
+
+Options:
+  --host <host>        Defaults to 127.0.0.1
+  --port <port>        Defaults to 8080
+  --path <path>        Defaults to /endpoints.php
+  --scheme <scheme>    Defaults to http
+  --url <url>          Override the full base URL
+  --timeout <seconds>  HTTP timeout, defaults to 5 seconds
+  --help               Display this help
+HELP;
+
+        fwrite(STDERR, $help . PHP_EOL);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function printTable(array $data): void
+    {
+        $rows = [];
+
+        foreach ($data as $endpoint => $details) {
+            $connections = $details['connections'] ?? [];
+
+            if (!is_array($connections) || $connections === []) {
+                $rows[] = $this->buildRow((string) $endpoint, null);
+                continue;
+            }
+
+            foreach ($connections as $connection) {
+                if (!is_array($connection)) {
+                    continue;
+                }
+                $rows[] = $this->buildRow((string) $endpoint, $connection);
+            }
+        }
+
+        if ($rows === []) {
+            echo "No endpoint data available.\n";
+            return;
+        }
+
+        $widths = $this->calculateWidths($rows);
+        $this->printHeader($widths);
+
+        $lastEndpoint = null;
+        foreach ($rows as $row) {
+            $endpoint = $row['endpoint'];
+            $displayEndpoint = $endpoint === $lastEndpoint ? '' : $endpoint;
+            printf(
+                "%-{$widths['endpoint']}s  %-{$widths['ptr']}s  %{$widths['keys']}s  %{$widths['writers']}s  %{$widths['flushes']}s  %{$widths['last_flush']}s\n",
+                $displayEndpoint,
+                $row['ptr'],
+                $row['keys'],
+                $row['writers'],
+                $row['flushes'],
+                $row['last_flush']
+            );
+            $lastEndpoint = $endpoint;
+        }
+    }
+
+    /**
+     * @param array<string, mixed>|null $connection
+     * @return array<string, string>
+     */
+    private function buildRow(string $endpoint, ?array $connection): array
+    {
+        $keys = '';
+        $ptr = '';
+        $writers = '';
+        $flushes = '';
+        $lastFlush = '';
+
+        if ($connection !== null) {
+            $keysValue = $connection['keys'] ?? [];
+            if (is_array($keysValue)) {
+                $keys = implode(',', array_map('strval', $keysValue));
+            } else {
+                $keys = (string) $keysValue;
+            }
+
+            if (isset($connection['ptr'])) {
+                $ptr = (string) $connection['ptr'];
+            }
+
+            if (isset($connection['writers'])) {
+                $writers = (string) $connection['writers'];
+            }
+
+            if (isset($connection['flushes'])) {
+                $flushes = (string) $connection['flushes'];
+            }
+
+            if (isset($connection['last_flush'])) {
+                $lastFlush = (string) $connection['last_flush'];
+            }
+        }
+
+        return [
+            'endpoint' => $endpoint,
+            'ptr' => $ptr,
+            'keys' => $keys,
+            'writers' => $writers,
+            'flushes' => $flushes,
+            'last_flush' => $lastFlush,
+        ];
+    }
+
+    /**
+     * @param array<int, array<string, string>> $rows
+     * @return array<string, int>
+     */
+    private function calculateWidths(array $rows): array
+    {
+        $widths = [
+            'endpoint' => strlen('ENDPOINT'),
+            'ptr' => strlen('PTR'),
+            'keys' => strlen('KEYS'),
+            'writers' => strlen('WRITERS'),
+            'flushes' => strlen('FLUSHES'),
+            'last_flush' => strlen('LAST FLUSH'),
+        ];
+
+        foreach ($rows as $row) {
+            foreach ($widths as $key => $width) {
+                $widths[$key] = max($width, strlen($row[$key]));
+            }
+        }
+
+        return $widths;
+    }
+
+    /**
+     * @param array<string, int> $widths
+     */
+    private function printHeader(array $widths): void
+    {
+        printf(
+            "%-{$widths['endpoint']}s  %-{$widths['ptr']}s  %{$widths['keys']}s  %{$widths['writers']}s  %{$widths['flushes']}s  %{$widths['last_flush']}s\n",
+            'ENDPOINT',
+            'PTR',
+            'KEYS',
+            'WRITERS',
+            'FLUSHES',
+            'LAST FLUSH'
+        );
+
+        printf(
+            "%s  %s  %s  %s  %s  %s\n",
+            str_repeat('-', $widths['endpoint']),
+            str_repeat('-', $widths['ptr']),
+            str_repeat('-', $widths['keys']),
+            str_repeat('-', $widths['writers']),
+            str_repeat('-', $widths['flushes']),
+            str_repeat('-', $widths['last_flush'])
+        );
+    }
+}
+
+(new EndpointsCli())->run($argv);
