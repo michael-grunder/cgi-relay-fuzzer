@@ -34,12 +34,15 @@ final class EndpointsController
         $accept = strtolower($request->headers->get('accept', ''));
 
         if ($format === 'json' || str_contains($accept, 'application/json')) {
-            return new JsonResponse(
-                $endpoints,
-                Response::HTTP_OK,
-                [],
-                JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
-            );
+            $jsonOptions = JsonResponse::DEFAULT_ENCODING_OPTIONS
+                | JSON_PRETTY_PRINT
+                | JSON_UNESCAPED_SLASHES
+                | JSON_UNESCAPED_UNICODE;
+
+            $response = new JsonResponse($endpoints, Response::HTTP_OK);
+            $response->setEncodingOptions($jsonOptions);
+
+            return $response;
         }
 
         $json = json_encode(
