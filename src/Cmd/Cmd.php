@@ -30,12 +30,15 @@ abstract class Cmd extends HttpRequest {
         return strtolower(end($parts));
     }
 
-    public function fuzz(): array {
-        $args = [
-            'cmd'  => $this->name,
+    public function nextArgs(): array {
+        return [
+            'cmd' => $this->name,
             'args' => $this->args(),
         ];
+    }
 
+
+    public function exec(array $args): array {
         $res = ['query' => $args];
 
         $classes = match (!!($this->flags() & Cmd::READ)) {

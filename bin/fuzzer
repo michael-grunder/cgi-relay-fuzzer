@@ -43,14 +43,16 @@ while (++$it) {
         $clients->kill(null);
     }
 
-    $cmd = $reg->randomCmd();
-    $res = $cmd->fuzz();
+    $cmd  = $reg->randomCmd();
+    $args = $cmd->nextArgs();
 
-    if (!($cmd->flags() & Cmd\Cmd::READ))
+    $res = $cmd->exec($args);
+
+    if (!($cmd->flags() & Cmd\Cmd::READ)) {
         continue;
+    }
 
     $st  = microtime(true);
-    $res = $cmd->fuzz();
 
     assert(validateReply($res), 'Invalid reply structure');
 
