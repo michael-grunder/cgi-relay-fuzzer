@@ -20,6 +20,10 @@ abstract class Cmd extends HttpRequest {
     abstract public function flags(): int;
     abstract public function args(): array;
 
+    protected function cannonicalize(mixed $res): mixed {
+        return $res;
+    }
+
     public string $name {
         get => $this->cmd();
     }
@@ -37,7 +41,6 @@ abstract class Cmd extends HttpRequest {
         ];
     }
 
-
     public function exec(array $args): array {
         $res = ['query' => $args];
 
@@ -49,6 +52,7 @@ abstract class Cmd extends HttpRequest {
         foreach ($classes as $class) {
             $args['class'] = $class;
             $res[$class] = parent::exec($args);
+            $res[$class]['result'] = $this->cannonicalize($res[$class]['result']);
         }
 
         return $res;

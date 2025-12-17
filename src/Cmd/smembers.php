@@ -18,4 +18,13 @@ class smembers extends KeyCmd {
             $this->cfg->randomKey($this->type())
         ];
     }
+
+    public function cannonicalize(mixed $res): mixed {
+        if ( ! is_array($res))
+            return $res;
+
+        sort($res);
+
+        return $res;
+    }
 }
