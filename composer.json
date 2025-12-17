@@ -12,5 +12,7 @@
         }
     ],
     "bin": ["bin/fuzzer"],
-    "require": {}
+    "require": {
+        "symfony/console": "^8.0"
+    }
 }
