@@ -22,7 +22,8 @@ final class CommandController
 
         $class = trim((string) $request->query->get('class', ''));
         $command = trim((string) $request->query->get('cmd', ''));
-        $args = $request->query->get('args', []);
+        $query = $request->query->all();
+        $args = $query['args'] ?? [];
 
         if (!is_array($args)) {
             $args = [$args];
