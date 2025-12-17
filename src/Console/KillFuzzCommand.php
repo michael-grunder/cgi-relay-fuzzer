@@ -102,6 +102,10 @@ final class KillFuzzCommand extends Command
                 $retryDelay
             );
 
+            if ($io->isVerbose()) {
+                $this->renderIterationTrace($io, $iteration, $result);
+            }
+
             $retries += $result['retries'];
             $staleReads += $result['staleReads'];
 
@@ -231,7 +235,7 @@ final class KillFuzzCommand extends Command
         string $command,
         array $args,
         array &$steps,
-        string $action = null,
+        ?string $action = null,
         array $meta = []
     ): array {
         $response = $endpoint->dispatch($class, $command, $args);
@@ -308,6 +312,253 @@ final class KillFuzzCommand extends Command
             ['Stale Reads' => $staleReads]
         );
         $io->newLine();
+    }
+
+    /**
+     * @param array{
+     *   key?: string,
+     *   retries?: int,
+     *   staleReads?: int,
+     *   steps: array<int, array<string, mixed>>
+     * } $result
+     */
+    private function renderIterationTrace(SymfonyStyle $io, int $iteration, array $result): void
+    {
+        $header = sprintf(
+            '<fg=cyan>Iteration %d</> <fg=white>(Key: %s)</>',
+            $iteration,
+            $result['key'] ?? 'n/a'
+        );
+        if (isset($result['retries'], $result['staleReads'])) {
+            $header .= sprintf(
+                ' <fg=white>[retries: %d, stale reads: %d]</>',
+                $result['retries'],
+                $result['staleReads']
+            );
+        }
+
+        $io->writeln($header);
+        foreach ($result['steps'] as $step) {
+            $io->writeln(sprintf('  %s', $this->describeStep($step)));
+        }
+        $io->newLine();
+    }
+
+    /**
+     * @param array<string, mixed> $step
+     */
+    private function describeStep(array $step): string
+    {
+        $category = $this->categorizeStep($step);
+        [$label, $color] = $this->labelStyleForCategory($category);
+        $attempt = (int) ($step['attempt'] ?? 1);
+        $labelText = $label;
+
+        if ($category === 'read' && $attempt > 1) {
+            $labelText .= sprintf(' (attempt %d)', $attempt);
+        }
+
+        $line = sprintf('<fg=%s>%s</>', $color, $labelText);
+        $command = $this->describeCommandSegment($step, $category);
+        if ($command !== '') {
+            $line .= ' - ' . $command;
+        }
+        $meta = $this->describeMetaSegment($step, $category);
+        if ($meta !== '') {
+            $line .= ' ' . $meta;
+        }
+
+        return $line;
+    }
+
+    /**
+     * @param array<string, mixed> $step
+     */
+    private function categorizeStep(array $step): string
+    {
+        return match ($step['action'] ?? '') {
+            'write-initial', 'write-updated' => 'write',
+            'prime-read', 'verify-read' => 'read',
+            'kill-client', 'kill-worker' => 'kill',
+            default => 'command',
+        };
+    }
+
+    /**
+     * @return array{0: string, 1: string}
+     */
+    private function labelStyleForCategory(string $category): array
+    {
+        return match ($category) {
+            'write' => ['WRITE', 'green'],
+            'read' => ['READ', 'blue'],
+            'kill' => ['KILL', 'red'],
+            default => ['STEP', 'white'],
+        };
+    }
+
+    /**
+     * @param array<string, mixed> $step
+     */
+    private function describeCommandSegment(array $step, string $category): string
+    {
+        $command = strtoupper((string) ($step['command'] ?? ''));
+        $args = is_array($step['args'] ?? null) ? $step['args'] : [];
+        $response = is_array($step['response'] ?? null) ? $step['response'] : [];
+
+        return match ($category) {
+            'write' => sprintf(
+                '%s %s => %s',
+                $command,
+                $this->formatValue($args[0] ?? null),
+                $this->formatValue($args[1] ?? null)
+            ),
+            'read' => sprintf(
+                '%s %s => %s',
+                $command,
+                $this->formatValue($args[0] ?? null),
+                $this->formatValue($response['result'] ?? null)
+            ),
+            'kill' => $this->describeKillCommand($command, $args, $step, $response),
+            default => $this->describeGenericCommand($command, $args, $step, $response),
+        };
+    }
+
+    /**
+     * @param array<int, mixed> $args
+     * @param array<string, mixed> $step
+     * @param array<string, mixed> $response
+     */
+    private function describeKillCommand(string $command, array $args, array $step, array $response): string
+    {
+        $argString = trim(implode(' ', array_map(
+            fn ($arg) => $this->formatValue($arg, false),
+            $args
+        )));
+        if ($argString !== '') {
+            $command .= ' ' . $argString;
+        }
+
+        $result = $step['result'] ?? $response['result'] ?? null;
+        if ($result !== null) {
+            $command .= ' => ' . $this->formatValue($result, false);
+        }
+
+        return $command;
+    }
+
+    /**
+     * @param array<int, mixed> $args
+     * @param array<string, mixed> $step
+     * @param array<string, mixed> $response
+     */
+    private function describeGenericCommand(string $command, array $args, array $step, array $response): string
+    {
+        $parts = [];
+        foreach ($args as $arg) {
+            $parts[] = $this->formatValue($arg);
+        }
+        $line = trim(sprintf('%s %s', $command, implode(', ', $parts)));
+        $result = $response['result'] ?? $step['result'] ?? null;
+        if ($result !== null) {
+            $line .= ' => ' . $this->formatValue($result);
+        }
+
+        return trim($line);
+    }
+
+    /**
+     * @param array<string, mixed> $step
+     */
+    private function describeMetaSegment(array $step, string $category): string
+    {
+        $parts = [];
+        $response = is_array($step['response'] ?? null) ? $step['response'] : [];
+        if (in_array($category, ['write', 'read'], true)) {
+            $parts[] = sprintf('Client: %s', $this->formatClientName((string) ($step['class'] ?? '')));
+        }
+
+        if ($category === 'read' && $response !== []) {
+            if (isset($response['client_id']) && $response['client_id'] !== null) {
+                $parts[] = sprintf('Client ID: %s', $response['client_id']);
+            }
+            if (isset($response['pid']) && $response['pid'] !== null) {
+                $parts[] = sprintf('Worker PID: %s', $response['pid']);
+            }
+        }
+
+        if ($category === 'kill') {
+            if (($step['action'] ?? '') === 'kill-worker') {
+                if (isset($step['args'][0])) {
+                    $parts[] = sprintf('Worker PID: %s', $step['args'][0]);
+                }
+                if (isset($step['args'][1])) {
+                    $parts[] = sprintf('Signal: %s', $step['args'][1]);
+                }
+            } else {
+                $parts[] = 'Client: Redis';
+            }
+        }
+
+        if ($parts === []) {
+            return '';
+        }
+
+        return '[' . implode(', ', $parts) . ']';
+    }
+
+    private function formatClientName(?string $client): string
+    {
+        $normalized = strtolower((string) $client);
+
+        return match ($normalized) {
+            'relay' => 'Relay',
+            'redis' => 'Redis',
+            'posix' => 'POSIX',
+            default => ucfirst($normalized) ?: 'Unknown',
+        };
+    }
+
+    private function formatValue(mixed $value, bool $quoteStrings = true): string
+    {
+        if (is_string($value)) {
+            $value = $this->truncateString($value, 80);
+            return $quoteStrings
+                ? "'" . addcslashes($value, "\\'") . "'"
+                : addcslashes($value, "\\'");
+        }
+
+        if (is_bool($value)) {
+            return $value ? 'true' : 'false';
+        }
+
+        if (is_int($value) || is_float($value)) {
+            return (string) $value;
+        }
+
+        if ($value === null) {
+            return 'null';
+        }
+
+        if (is_array($value)) {
+            $encoded = json_encode($value, JSON_UNESCAPED_SLASHES);
+            return $encoded !== false ? $encoded : '[array]';
+        }
+
+        if (is_object($value)) {
+            return sprintf('[%s]', get_debug_type($value));
+        }
+
+        return (string) $value;
+    }
+
+    private function truncateString(string $value, int $limit): string
+    {
+        if ($limit <= 3 || strlen($value) <= $limit) {
+            return $value;
+        }
+
+        return substr($value, 0, $limit - 3) . '...';
     }
 
     private function reportFailure(SymfonyStyle $io, array $result, ?string $failureLog): void
