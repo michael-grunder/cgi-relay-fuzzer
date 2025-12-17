@@ -53,7 +53,7 @@ class FuzzCommand extends Command
         $showLast = (bool) $input->getOption('show-last');
         $listCommands = (bool) $input->getOption('list-commands');
 
-        $cfg = new FuzzConfig('localhost', 8080, $keys, $mems);
+        $cfg = new FuzzConfig($host, $port, $keys, $mems);
         $clients = new Clients($host, $port);
         $trimmer = new Trimmer($trim);
         $stats = new Stats($host, $port);
