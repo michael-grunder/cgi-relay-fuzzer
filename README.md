@@ -21,6 +21,24 @@ inspect the available fuzz commands and their groupings via:
 bin/fuzzer --list-commands
 ```
 
+### Deterministic cache invalidation fuzzer
+
+`bin/kill-fuzzer` focuses on the specific generation invalidation workflow. It
+writes deterministic keys, forces Relay to cache them, and then invalidates the
+connection either by killing the Redis client ID or by signalling the worker
+process ID that granted the cached reply. All of the knobs you would expect on
+a fuzzer are available: RNG seeds, per-iteration delays, controllable writer
+classes, value sizes, and configurable kill modes/signals. When stale data is
+observed you can point `--failure-log` at a file or directory to capture a full
+JSON log of every step.
+
+Example invocation that targets worker exits with SIGKILL and emits logs to the
+`var/log` directory:
+
+```
+bin/kill-fuzzer --kill-mode=worker --signal=SIGKILL --failure-log=var/log --delay=0.1
+```
+
 ### Manually issuing commands
 
 Use `bin/cmd` to talk to the `public/cmd.php` endpoint without juggling curl

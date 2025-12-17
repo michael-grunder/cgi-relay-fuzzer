@@ -1,0 +1,454 @@
+<?php
+
+declare(strict_types=1);
+
+namespace Mgrunder\Fuzzer\Console;
+
+use Mgrunder\Fuzzer\CmdEndpoint;
+use Symfony\Component\Console\Attribute\AsCommand;
+use Symfony\Component\Console\Command\Command;
+use Symfony\Component\Console\Input\InputInterface;
+use Symfony\Component\Console\Input\InputOption;
+use Symfony\Component\Console\Output\OutputInterface;
+use Symfony\Component\Console\Style\SymfonyStyle;
+
+#[AsCommand(name: 'kill-fuzz', description: 'Targeted reproduction of stale cache scenarios by killing relay clients or workers.')]
+final class KillFuzzCommand extends Command
+{
+    private const VALID_WRITERS = ['redis', 'relay'];
+    private const KILL_MODE_CLIENT = 'client';
+    private const KILL_MODE_WORKER = 'worker';
+
+    protected function configure(): void
+    {
+        $this
+            ->addOption('host', null, InputOption::VALUE_REQUIRED, 'Relay host to target', '127.0.0.1')
+            ->addOption('port', null, InputOption::VALUE_REQUIRED, 'Relay port to target', 8080)
+            ->addOption('redis-host', null, InputOption::VALUE_REQUIRED, 'Redis host for raw client operations', '127.0.0.1')
+            ->addOption('redis-port', null, InputOption::VALUE_REQUIRED, 'Redis port for raw client operations', 6379)
+            ->addOption('seed', null, InputOption::VALUE_REQUIRED, 'RNG seed (default: random)')
+            ->addOption('writers', null, InputOption::VALUE_REQUIRED, 'Comma separated list of writer clients (relay,redis)', 'relay,redis')
+            ->addOption('key-prefix', null, InputOption::VALUE_REQUIRED, 'Prefix for deterministic keys', 'fuzz:key')
+            ->addOption('keys', null, InputOption::VALUE_REQUIRED, 'Number of deterministic keys to target', 100)
+            ->addOption('iterations', null, InputOption::VALUE_REQUIRED, 'Number of iterations to run (0 = infinite)', 0)
+            ->addOption('delay', null, InputOption::VALUE_REQUIRED, 'Delay (sec) between iterations', 0.0)
+            ->addOption('grace-period', null, InputOption::VALUE_REQUIRED, 'Seconds to wait for cache invalidation', 1.0)
+            ->addOption('retry-delay', null, InputOption::VALUE_REQUIRED, 'Seconds to sleep between repeated relay reads', 0.01)
+            ->addOption('value-size', null, InputOption::VALUE_REQUIRED, 'Target size of generated values', 48)
+            ->addOption('kill-mode', null, InputOption::VALUE_REQUIRED, 'One of "client" or "worker"', self::KILL_MODE_CLIENT)
+            ->addOption('signal', null, InputOption::VALUE_REQUIRED, 'Signal to send when kill-mode=worker', 'SIGKILL')
+            ->addOption('failure-log', null, InputOption::VALUE_REQUIRED, 'Optional file/dir path for JSON failure logs');
+    }
+
+    protected function execute(InputInterface $input, OutputInterface $output): int
+    {
+        $io = new SymfonyStyle($input, $output);
+
+        $host = (string) $input->getOption('host');
+        $port = (int) $input->getOption('port');
+        $redisHost = (string) $input->getOption('redis-host');
+        $redisPort = (int) $input->getOption('redis-port');
+        $writers = $this->parseWriters((string) $input->getOption('writers'));
+        $keyPrefix = (string) $input->getOption('key-prefix');
+        $keyCount = max(1, (int) $input->getOption('keys'));
+        $iterationLimit = (int) $input->getOption('iterations');
+        $delay = max(0.0, (float) $input->getOption('delay'));
+        $grace = max(0.0, (float) $input->getOption('grace-period'));
+        $retryDelay = max(0.0, (float) $input->getOption('retry-delay'));
+        $valueSize = max(16, (int) $input->getOption('value-size'));
+        $killMode = $this->normalizeKillMode((string) $input->getOption('kill-mode'));
+        $signalInput = (string) $input->getOption('signal');
+        $signal = $this->parseSignal($signalInput);
+        $failureLog = $input->getOption('failure-log');
+        $seed = $this->initializeSeed($input->getOption('seed'));
+
+        $redis = new \Redis(['host' => $redisHost, 'port' => $redisPort]);
+        $endpoint = new CmdEndpoint($host, $port);
+
+        $io->title('Relay deterministic kill fuzzer');
+        $io->definitionList(
+            ['Endpoint' => sprintf('%s:%d', $host, $port)],
+            ['Writers' => implode(', ', $writers)],
+            ['Key Prefix' => $keyPrefix],
+            ['Logical Keys' => $keyCount],
+            ['Delay' => sprintf('%.3f sec', $delay)],
+            ['Grace Period' => sprintf('%.3f sec', $grace)],
+            ['Retry Delay' => sprintf('%.3f sec', $retryDelay)],
+            ['Kill Mode' => $killMode === self::KILL_MODE_CLIENT ? 'Redis CLIENT KILL' : sprintf('Worker signal (%s)', strtoupper($signalInput))],
+            ['Value Size' => sprintf('%d bytes', $valueSize)],
+            ['Seed' => $seed]
+        );
+        $io->newLine();
+
+        $iteration = 0;
+        $retries = 0;
+        $staleReads = 0;
+        $delayUs = (int) ($delay * 1_000_000);
+        $lastTick = microtime(true);
+        $start = $lastTick;
+
+        while ($iterationLimit === 0 || $iteration < $iterationLimit) {
+            $iteration++;
+            $result = $this->runIteration(
+                $endpoint,
+                $redis,
+                $writers,
+                $keyPrefix,
+                $keyCount,
+                $valueSize,
+                $killMode,
+                $signal,
+                $grace,
+                $retryDelay
+            );
+
+            $retries += $result['retries'];
+            $staleReads += $result['staleReads'];
+
+            if (!$result['success']) {
+                $this->reportFailure($io, $result, $failureLog);
+                return Command::FAILURE;
+            }
+
+            if (($now = microtime(true)) - $lastTick >= 1) {
+                $this->renderTick($io, $iteration, $start, $now, $retries, $staleReads);
+                $lastTick = $now;
+            }
+
+            if ($delayUs > 0) {
+                usleep($delayUs);
+            }
+        }
+
+        return Command::SUCCESS;
+    }
+
+    /**
+     * @return array{
+     *   success: bool,
+     *   retries: int,
+     *   staleReads: int,
+     *   steps: array<int, array<string, mixed>>,
+     *   key: string,
+     *   expected: string,
+     *   observed: mixed,
+     * }
+     */
+    private function runIteration(
+        CmdEndpoint $endpoint,
+        \Redis $redis,
+        array $writers,
+        string $keyPrefix,
+        int $keyCount,
+        int $valueSize,
+        string $killMode,
+        int $signal,
+        float $grace,
+        float $retryDelay
+    ): array {
+        $steps = [];
+        $key = $this->pickKey($keyPrefix, $keyCount);
+
+        $initialWriter = $writers[array_rand($writers)];
+        $initialValue = $this->nextValue($valueSize);
+        $this->execOrThrow($endpoint, $initialWriter, 'set', [$key, $initialValue], $steps, 'write-initial');
+
+        $firstRead = $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'prime-read');
+        $clientId = (int) ($firstRead['client_id'] ?? 0);
+        $workerPid = (int) ($firstRead['pid'] ?? 0);
+
+        if ($killMode === self::KILL_MODE_CLIENT) {
+            if ($clientId <= 0) {
+                throw new \RuntimeException('Relay response did not include a valid client id.');
+            }
+            $killResult = $redis->rawCommand('CLIENT', 'KILL', 'ID', (string) $clientId);
+            if ($killResult === false || $killResult === 0 || $killResult === '0') {
+                throw new \RuntimeException(sprintf('Failed to kill client id %d', $clientId));
+            }
+            $this->recordStep($steps, 'kill-client', 'redis', 'CLIENT KILL ID', [$clientId], ['result' => $killResult]);
+        } else {
+            $killSuccess = $this->killWorker($workerPid, $signal);
+            $this->recordStep($steps, 'kill-worker', 'posix', 'kill', [$workerPid, $signal], ['result' => $killSuccess]);
+        }
+
+        $updatedValue = $this->nextValue($valueSize);
+        $nextWriter = $writers[array_rand($writers)];
+        $this->execOrThrow($endpoint, $nextWriter, 'set', [$key, $updatedValue], $steps, 'write-updated');
+
+        $retries = 0;
+        $staleReads = 0;
+        $deadline = microtime(true) + $grace;
+        $last = null;
+
+        do {
+            $last = $this->execOrThrow(
+                $endpoint,
+                'relay',
+                'get',
+                [$key],
+                $steps,
+                'verify-read',
+                ['attempt' => $retries + 1]
+            );
+            if (($last['result'] ?? null) === $updatedValue) {
+                return [
+                    'success' => true,
+                    'retries' => $retries,
+                    'staleReads' => $staleReads,
+                    'steps' => $steps,
+                    'key' => $key,
+                    'expected' => $updatedValue,
+                    'observed' => $last['result'] ?? null,
+                ];
+            }
+
+            $staleReads++;
+            $retries++;
+
+            if ($grace <= 0.0) {
+                break;
+            }
+
+            if ($retryDelay > 0.0) {
+                usleep((int) ($retryDelay * 1_000_000));
+            }
+        } while (microtime(true) < $deadline);
+
+        return [
+            'success' => false,
+            'retries' => $retries,
+            'staleReads' => $staleReads,
+            'steps' => $steps,
+            'key' => $key,
+            'expected' => $updatedValue,
+            'observed' => $last['result'] ?? null,
+        ];
+    }
+
+    private function execOrThrow(
+        CmdEndpoint $endpoint,
+        string $class,
+        string $command,
+        array $args,
+        array &$steps,
+        string $action = null,
+        array $meta = []
+    ): array {
+        $response = $endpoint->dispatch($class, $command, $args);
+        if (($response['status'] ?? null) !== 'ok') {
+            $this->recordStep($steps, $action ?? $command, $class, $command, $args, [
+                'response' => $response,
+                'meta' => $meta,
+            ]);
+            throw new \RuntimeException(sprintf('Command %s:%s failed: %s', $class, $command, json_encode($response)));
+        }
+
+        $this->recordStep(
+            $steps,
+            $action ?? $command,
+            $class,
+            $command,
+            $args,
+            array_merge(['response' => $response], $meta)
+        );
+
+        return $response;
+    }
+
+    private function recordStep(
+        array &$steps,
+        string $action,
+        string $class,
+        string $command,
+        array $args,
+        array $extra = []
+    ): void {
+        $steps[] = array_merge([
+            'ts' => microtime(true),
+            'action' => $action,
+            'class' => $class,
+            'command' => $command,
+            'args' => $args,
+        ], $extra);
+    }
+
+    private function pickKey(string $prefix, int $count): string
+    {
+        return sprintf('%s:%d', $prefix, mt_rand(1, $count));
+    }
+
+    private function nextValue(int $size): string
+    {
+        $prefix = sprintf('value:%d:', mt_rand());
+        if (strlen($prefix) >= $size) {
+            return substr($prefix, 0, $size);
+        }
+
+        $remaining = $size - strlen($prefix);
+        $suffix = '';
+        while (strlen($suffix) < $remaining) {
+            $suffix .= base_convert((string) mt_rand(0, PHP_INT_MAX), 10, 36);
+        }
+
+        return $prefix . substr($suffix, 0, $remaining);
+    }
+
+    private function renderTick(
+        SymfonyStyle $io,
+        int $iteration,
+        float $start,
+        float $now,
+        int $retries,
+        int $staleReads
+    ): void {
+        $io->section(sprintf('Iteration %d', $iteration));
+        $io->definitionList(
+            ['Rate' => sprintf('%.2f iterations/sec', $iteration / max(0.001, $now - $start))],
+            ['Retries' => $retries],
+            ['Stale Reads' => $staleReads]
+        );
+        $io->newLine();
+    }
+
+    private function reportFailure(SymfonyStyle $io, array $result, ?string $failureLog): void
+    {
+        $io->error(sprintf(
+            'Stale data detected for %s. Expected %s, observed %s after %d retries.',
+            $result['key'],
+            json_encode($result['expected'], JSON_UNESCAPED_SLASHES),
+            json_encode($result['observed'], JSON_UNESCAPED_SLASHES),
+            $result['retries']
+        ));
+
+        $payload = [
+            'key' => $result['key'],
+            'expected' => $result['expected'],
+            'observed' => $result['observed'],
+            'steps' => $result['steps'],
+        ];
+
+        $encoded = json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+
+        if ($failureLog === null) {
+            $io->writeln($encoded);
+            return;
+        }
+
+        $path = $this->resolveLogPath($failureLog);
+        file_put_contents($path, $encoded);
+        $io->warning(sprintf('Failure log written to %s', $path));
+    }
+
+    private function resolveLogPath(string $target): string
+    {
+        $normalized = rtrim($target);
+        if ($normalized === '') {
+            return sprintf('failure-%s.json', date('Ymd-His'));
+        }
+
+        if (is_dir($normalized) || str_ends_with($normalized, DIRECTORY_SEPARATOR)) {
+            $dir = rtrim($normalized, DIRECTORY_SEPARATOR);
+            if ($dir === '') {
+                $dir = '.';
+            }
+            if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+                throw new \RuntimeException(sprintf('Unable to create log directory %s', $dir));
+            }
+            return sprintf('%s/failure-%s.json', $dir, date('Ymd-His'));
+        }
+
+        $dir = dirname($normalized);
+        if (!is_dir($dir) && !@mkdir($dir, 0777, true) && !is_dir($dir)) {
+            throw new \RuntimeException(sprintf('Unable to create log directory %s', $dir));
+        }
+
+        return $normalized;
+    }
+
+    private function killWorker(int $pid, int $signal): bool
+    {
+        if ($pid <= 0) {
+            throw new \RuntimeException('Invalid worker PID returned from relay.');
+        }
+
+        if (!function_exists('posix_kill')) {
+            throw new \RuntimeException('posix_kill is not available; cannot kill workers.');
+        }
+
+        if (!posix_kill($pid, $signal)) {
+            throw new \RuntimeException(sprintf('Failed to send signal %d to pid %d', $signal, $pid));
+        }
+
+        return true;
+    }
+
+    private function initializeSeed(null|string $seedOption): int
+    {
+        if ($seedOption !== null) {
+            $seed = (int) $seedOption;
+        } else {
+            $seed = random_int(1, PHP_INT_MAX);
+        }
+
+        mt_srand($seed);
+
+        return $seed;
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function parseWriters(string $writers): array
+    {
+        $choices = array_filter(array_map('trim', explode(',', $writers)));
+        if ($choices === []) {
+            throw new \InvalidArgumentException('At least one writer must be provided.');
+        }
+
+        foreach ($choices as $choice) {
+            if (!in_array($choice, self::VALID_WRITERS, true)) {
+                throw new \InvalidArgumentException(sprintf(
+                    'Invalid writer "%s". Allowed writers: %s',
+                    $choice,
+                    implode(', ', self::VALID_WRITERS)
+                ));
+            }
+        }
+
+        return array_values($choices);
+    }
+
+    private function normalizeKillMode(string $mode): string
+    {
+        $normalized = strtolower(trim($mode));
+
+        return match ($normalized) {
+            self::KILL_MODE_CLIENT, self::KILL_MODE_WORKER => $normalized,
+            default => throw new \InvalidArgumentException('Kill mode must be "client" or "worker".'),
+        };
+    }
+
+    private function parseSignal(string $signal): int
+    {
+        $signal = trim($signal);
+
+        if ($signal === '') {
+            throw new \InvalidArgumentException('Signal cannot be empty.');
+        }
+
+        if (is_numeric($signal)) {
+            return (int) $signal;
+        }
+
+        $name = strtoupper($signal);
+        if (!str_starts_with($name, 'SIG')) {
+            $name = 'SIG' . $name;
+        }
+
+        if (!defined($name)) {
+            throw new \InvalidArgumentException(sprintf('Unknown signal "%s".', $signal));
+        }
+
+        return (int) constant($name);
+    }
+}

@@ -11,7 +11,7 @@
             "email": "michael.grunder@gmail.com"
         }
     ],
-    "bin": ["bin/fuzzer", "bin/cmd", "bin/endpoints"],
+    "bin": ["bin/fuzzer", "bin/cmd", "bin/endpoints", "bin/kill-fuzzer"],
     "require": {
         "symfony/console": "^8.0",
         "symfony/http-foundation": "^8.0"

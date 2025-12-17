@@ -1,0 +1,15 @@
+#!../sapi/cli/php
+<?php
+
+declare(strict_types=1);
+
+use Mgrunder\Fuzzer\Console\KillFuzzCommand;
+use Symfony\Component\Console\Application;
+
+require_once __DIR__ . '/../vendor/autoload.php';
+
+$application = new Application('Mgrunder Targeted Fuzzer');
+$command = new KillFuzzCommand();
+$application->addCommand($command);
+$application->setDefaultCommand('kill-fuzz', true);
+$application->run();
