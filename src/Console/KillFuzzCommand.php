@@ -163,10 +163,14 @@ final class KillFuzzCommand extends Command
         $initialValue = $this->nextValue($valueSize);
         $this->execOrThrow($endpoint, $initialWriter, 'set', [$key, $initialValue], $steps, 'write-initial');
 
-        $firstRead = $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'prime-read');
-        $initialGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-prime');
-        $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'cache-read');
-        $postCacheGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-cache');
+        $firstRead = $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'prime-read', [
+            'source' => 'redis',
+        ]);
+        $initialGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-prime', false);
+        $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'cache-read', [
+            'source' => 'cache',
+        ]);
+        $postCacheGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-cache', false);
         if ($postCacheGetCalls !== $initialGetCalls) {
             throw new \RuntimeException(sprintf(
                 'Expected relay cache hit for key %s but GET command count changed from %d to %d.',
@@ -280,7 +284,8 @@ final class KillFuzzCommand extends Command
         CommandStatsEndpoint $endpoint,
         string $command,
         array &$steps,
-        string $action
+        string $action,
+        bool $recordStep = true
     ): int {
         $stats = $endpoint->fetch();
         if (($stats['status'] ?? null) === 'error') {
@@ -310,14 +315,16 @@ final class KillFuzzCommand extends Command
 
         $calls = (int) $record['calls'];
 
-        $this->recordStep(
-            $steps,
-            $action,
-            'commandstats',
-            'commandstats',
-            [$normalized],
-            ['response' => ['result' => $calls]]
-        );
+        if ($recordStep) {
+            $this->recordStep(
+                $steps,
+                $action,
+                'commandstats',
+                'commandstats',
+                [$normalized],
+                ['response' => ['result' => $calls]]
+            );
+        }
 
         return $calls;
     }
@@ -544,6 +551,9 @@ final class KillFuzzCommand extends Command
         if (in_array($category, ['write', 'read'], true)) {
             $parts[] = sprintf('Client: %s', $this->formatClientName((string) ($step['class'] ?? '')));
         }
+        if ($category === 'read' && isset($step['source'])) {
+            $parts[] = sprintf('From: %s', $this->formatReadSource($step['source']));
+        }
 
         if ($category === 'read' && $response !== []) {
             if (isset($response['client_id']) && $response['client_id'] !== null) {
@@ -583,6 +593,17 @@ final class KillFuzzCommand extends Command
             'redis' => 'Redis',
             'posix' => 'POSIX',
             'commandstats' => 'Command Stats',
+            default => ucfirst($normalized) ?: 'Unknown',
+        };
+    }
+
+    private function formatReadSource(mixed $source): string
+    {
+        $normalized = strtolower((string) $source);
+
+        return match ($normalized) {
+            'cache' => 'Cache',
+            'redis' => 'Redis',
             default => ucfirst($normalized) ?: 'Unknown',
         };
     }
