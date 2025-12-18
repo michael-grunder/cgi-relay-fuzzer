@@ -41,6 +41,7 @@ final class KillFuzzCommand extends Command
             ->addOption('redis-port', null, InputOption::VALUE_REQUIRED, 'Redis port for raw client operations', 6379)
             ->addOption('seed', null, InputOption::VALUE_REQUIRED, 'RNG seed (default: random)')
             ->addOption('writers', null, InputOption::VALUE_REQUIRED, 'Comma separated list of writer clients (relay,redis)', 'relay,redis')
+            ->addOption('types', null, InputOption::VALUE_REQUIRED, 'Comma separated list of operation types (string,set,list,hash)')
             ->addOption('key-prefix', null, InputOption::VALUE_REQUIRED, 'Prefix for deterministic keys', 'fuzz:key')
             ->addOption('keys', null, InputOption::VALUE_REQUIRED, 'Number of deterministic keys to target', 100)
             ->addOption('iterations', null, InputOption::VALUE_REQUIRED, 'Number of iterations to run (0 = infinite)', 0)
@@ -76,6 +77,8 @@ final class KillFuzzCommand extends Command
         $failureLog = $input->getOption('failure-log');
         $seed = $this->initializeSeed($input->getOption('seed'));
         $traceEnabled = (bool) $input->getOption('trace');
+        $typesFilter = $this->parseTypesOption($input->getOption('types'));
+        $operationProfiles = $this->resolveOperationProfiles($typesFilter);
 
         $redis = new \Redis(['host' => $redisHost, 'port' => $redisPort]);
         $endpoint = new CmdEndpoint($host, $port);
@@ -93,6 +96,7 @@ final class KillFuzzCommand extends Command
         $io->definitionList(
             ['Endpoint' => sprintf('%s:%d', $host, $port)],
             ['Writers' => implode(', ', $writers)],
+            ['Operation Types' => implode(', ', $this->extractOperationTypes($operationProfiles))],
             ['Key Prefix' => $keyPrefix],
             ['Logical Keys' => $keyCount],
             ['Delay' => sprintf('%.3f sec', $delay)],
@@ -119,6 +123,7 @@ final class KillFuzzCommand extends Command
                 $commandStats,
                 $redis,
                 $writers,
+                $operationProfiles,
                 $keyPrefix,
                 $keyCount,
                 $valueSize,
@@ -191,6 +196,7 @@ final class KillFuzzCommand extends Command
         CommandStatsEndpoint $commandStats,
         \Redis $redis,
         array $writers,
+        array $operationProfiles,
         string $keyPrefix,
         int $keyCount,
         int $valueSize,
@@ -200,7 +206,7 @@ final class KillFuzzCommand extends Command
         float $retryDelay
     ): array {
         $steps = [];
-        $operation = $this->pickOperationProfile();
+        $operation = $this->pickOperationProfile($operationProfiles);
         $operationType = $operation['type'];
         $key = $this->pickKey($keyPrefix, $keyCount, $operation['prefix']);
 
@@ -487,11 +493,14 @@ final class KillFuzzCommand extends Command
     /**
      * @return array{type: string, prefix: string, write: string, read: string}
      */
-    private function pickOperationProfile(): array
+    private function pickOperationProfile(array $operationProfiles): array
     {
-        $index = array_rand(self::OPERATION_PROFILES);
+        if ($operationProfiles === []) {
+            throw new \InvalidArgumentException('No operation profiles are available for selection.');
+        }
+        $index = array_rand($operationProfiles);
 
-        return self::OPERATION_PROFILES[$index];
+        return $operationProfiles[$index];
     }
 
     private function generateOperationValue(string $type, int $valueSize): mixed
@@ -1072,6 +1081,74 @@ final class KillFuzzCommand extends Command
         }
 
         return array_values($choices);
+    }
+
+    /**
+     * @return array<int, string>|null
+     */
+    private function parseTypesOption(null|string $typesOption): ?array
+    {
+        if ($typesOption === null) {
+            return null;
+        }
+
+        $parts = array_filter(array_map('trim', explode(',', (string) $typesOption)), static function (string $part): bool {
+            return $part !== '';
+        });
+
+        if ($parts === []) {
+            return null;
+        }
+
+        $normalized = array_values(array_unique(array_map(static function (string $part): string {
+            return strtolower($part);
+        }, $parts)));
+
+        $validTypes = $this->extractOperationTypes(self::OPERATION_PROFILES);
+        foreach ($normalized as $type) {
+            if (!in_array($type, $validTypes, true)) {
+                throw new \InvalidArgumentException(sprintf(
+                    'Invalid type "%s". Allowed types: %s',
+                    $type,
+                    implode(', ', $validTypes)
+                ));
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<int, array{type: string, prefix: string, write: string, read: string}> $operationProfiles
+     * @return array<int, string>
+     */
+    private function extractOperationTypes(array $operationProfiles): array
+    {
+        $types = array_map(static fn (array $profile): string => $profile['type'], $operationProfiles);
+
+        return array_values(array_unique($types));
+    }
+
+    /**
+     * @param array<int, string>|null $types
+     * @return array<int, array{type: string, prefix: string, write: string, read: string}>
+     */
+    private function resolveOperationProfiles(?array $types): array
+    {
+        if ($types === null) {
+            return self::OPERATION_PROFILES;
+        }
+
+        $profiles = array_values(array_filter(
+            self::OPERATION_PROFILES,
+            static fn (array $profile): bool => in_array($profile['type'], $types, true)
+        ));
+
+        if ($profiles === []) {
+            throw new \InvalidArgumentException('No operation profiles match the provided types.');
+        }
+
+        return $profiles;
     }
 
     private function normalizeKillMode(string $mode): string

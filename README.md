@@ -36,6 +36,10 @@ JSON log of every step.
 Run a finite number of deterministic iterations with `--iterations=N` (default
 of `0` keeps the loop running indefinitely).
 
+Use `--types` to constrain the fuzzer to a subset of paired operations. For
+example, `--types=string` limits iterations to SET/GET, while
+`--types=hash,list` would only run the HMSET/HGETALL and RPUSH/LRANGE pairs.
+
 Example invocation that targets worker exits with SIGKILL and emits logs to the
 `var/log` directory:
 
