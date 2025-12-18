@@ -19,6 +19,8 @@ final class KillFuzzCommand extends Command
     private const KILL_MODE_CLIENT = 'client';
     private const KILL_MODE_WORKER = 'worker';
 
+    private int $valueSequence = 0;
+
     protected function configure(): void
     {
         $this
@@ -34,7 +36,7 @@ final class KillFuzzCommand extends Command
             ->addOption('delay', null, InputOption::VALUE_REQUIRED, 'Delay (sec) between iterations', 0.0)
             ->addOption('grace-period', null, InputOption::VALUE_REQUIRED, 'Seconds to wait for cache invalidation', 1.0)
             ->addOption('retry-delay', null, InputOption::VALUE_REQUIRED, 'Seconds to sleep between repeated relay reads', 0.01)
-            ->addOption('value-size', null, InputOption::VALUE_REQUIRED, 'Target size of generated values', 48)
+            ->addOption('value-size', null, InputOption::VALUE_REQUIRED, 'Maximum length of generated values', 48)
             ->addOption('kill-mode', null, InputOption::VALUE_REQUIRED, 'One of "client" or "worker"', self::KILL_MODE_CLIENT)
             ->addOption('signal', null, InputOption::VALUE_REQUIRED, 'Signal to send when kill-mode=worker', 'SIGKILL')
             ->addOption('failure-log', null, InputOption::VALUE_REQUIRED, 'Optional file/dir path for JSON failure logs');
@@ -75,7 +77,7 @@ final class KillFuzzCommand extends Command
             ['Grace Period' => sprintf('%.3f sec', $grace)],
             ['Retry Delay' => sprintf('%.3f sec', $retryDelay)],
             ['Kill Mode' => $killMode === self::KILL_MODE_CLIENT ? 'Redis CLIENT KILL' : sprintf('Worker signal (%s)', strtoupper($signalInput))],
-            ['Value Size' => sprintf('%d bytes', $valueSize)],
+            ['Value Length Limit' => sprintf('%d chars', $valueSize)],
             ['Seed' => $seed]
         );
         $io->newLine();
@@ -283,18 +285,22 @@ final class KillFuzzCommand extends Command
 
     private function nextValue(int $size): string
     {
-        $prefix = sprintf('value:%d:', mt_rand());
-        if (strlen($prefix) >= $size) {
-            return substr($prefix, 0, $size);
+        $pid = getmypid();
+        if (!is_int($pid) || $pid <= 0) {
+            $pid = 0;
         }
 
-        $remaining = $size - strlen($prefix);
-        $suffix = '';
-        while (strlen($suffix) < $remaining) {
-            $suffix .= base_convert((string) mt_rand(0, PHP_INT_MAX), 10, 36);
+        $value = sprintf('value:%d:%d', $pid, ++$this->valueSequence);
+
+        if ($size <= 0) {
+            return $value;
         }
 
-        return $prefix . substr($suffix, 0, $remaining);
+        if (strlen($value) > $size) {
+            return substr($value, 0, $size);
+        }
+
+        return $value;
     }
 
     private function renderTick(
