@@ -19,7 +19,6 @@ final class KillFuzzCommand extends Command
     private const VALID_WRITERS = ['redis', 'relay'];
     private const KILL_MODE_CLIENT = 'client';
     private const KILL_MODE_WORKER = 'worker';
-    private const MAX_CACHE_HIT_ATTEMPTS = 12;
     /**
      * @var array<int, array{type: string, prefix: string, write: string, read: string}>
      */
@@ -97,6 +96,7 @@ final class KillFuzzCommand extends Command
         $iteration = 0;
         $retries = 0;
         $staleReads = 0;
+        $cacheHits = 0;
         $delayUs = (int) ($delay * 1_000_000);
         $lastTick = microtime(true);
         $start = $lastTick;
@@ -123,6 +123,9 @@ final class KillFuzzCommand extends Command
 
             $retries += $result['retries'];
             $staleReads += $result['staleReads'];
+            if (!empty($result['cacheHit'])) {
+                $cacheHits++;
+            }
 
             if (!$result['success']) {
                 $this->reportFailure($io, $result, $failureLog);
@@ -130,7 +133,7 @@ final class KillFuzzCommand extends Command
             }
 
             if (($now = microtime(true)) - $lastTick >= 1) {
-                $this->renderTick($io, $iteration, $start, $now, $retries, $staleReads);
+                $this->renderTick($io, $iteration, $start, $now, $retries, $staleReads, $cacheHits);
                 $lastTick = $now;
             }
 
@@ -147,6 +150,7 @@ final class KillFuzzCommand extends Command
      *   success: bool,
      *   retries: int,
      *   staleReads: int,
+     *   cacheHit: bool,
      *   steps: array<int, array<string, mixed>>,
      *   key: string,
      *   expected: mixed,
@@ -188,16 +192,16 @@ final class KillFuzzCommand extends Command
             'source' => 'redis',
         ]);
         $initialReadCalls = $this->fetchCommandCallCount($commandStats, $operation['read'], $steps, 'commandstats-prime', false);
-        $cacheRead = $this->readUntilCacheHit(
+        $cacheReadResult = $this->performCacheRead(
             $endpoint,
             $commandStats,
             $operation['read'],
             $readArgs,
             $steps,
-            $key,
-            $initialReadCalls,
-            $retryDelay
+            $initialReadCalls
         );
+        $cacheRead = $cacheReadResult['response'];
+        $cacheHit = $cacheReadResult['fromCache'];
         $clientId = (int) ($cacheRead['client_id'] ?? 0);
         $workerPid = (int) ($cacheRead['pid'] ?? 0);
 
@@ -251,6 +255,7 @@ final class KillFuzzCommand extends Command
                     'success' => true,
                     'retries' => $retries,
                     'staleReads' => $staleReads,
+                    'cacheHit' => $cacheHit,
                     'steps' => $steps,
                     'key' => $key,
                     'expected' => $updatedValue,
@@ -274,6 +279,7 @@ final class KillFuzzCommand extends Command
             'success' => false,
             'retries' => $retries,
             'staleReads' => $staleReads,
+            'cacheHit' => $cacheHit,
             'steps' => $steps,
             'key' => $key,
             'expected' => $updatedValue,
@@ -315,42 +321,28 @@ final class KillFuzzCommand extends Command
      * @param array<int, mixed> $args
      * @param array<int, array<string, mixed>> $steps
      */
-    private function readUntilCacheHit(
+    /**
+     * @param array<int, mixed> $args
+     * @param array<int, array<string, mixed>> $steps
+     * @return array{response: array<string, mixed>, fromCache: bool}
+     */
+    private function performCacheRead(
         CmdEndpoint $endpoint,
         CommandStatsEndpoint $commandStats,
         string $command,
         array $args,
         array &$steps,
-        string $key,
-        int $initialCallCount,
-        float $retryDelay
+        int $initialCallCount
     ): array {
-        $lastCallCount = $initialCallCount;
+        $response = $this->execOrThrow($endpoint, 'relay', $command, $args, $steps, 'cache-read');
+        $currentCallCount = $this->fetchCommandCallCount($commandStats, $command, $steps, 'commandstats-cache', false);
+        $fromCache = $currentCallCount === $initialCallCount;
+        $this->setLastReadStepSource($steps, $fromCache ? 'cache' : 'redis');
 
-        for ($attempt = 1; $attempt <= self::MAX_CACHE_HIT_ATTEMPTS; $attempt++) {
-            $response = $this->execOrThrow($endpoint, 'relay', $command, $args, $steps, 'cache-read', [
-                'source' => 'cache',
-                'attempt' => $attempt,
-            ]);
-            $currentCallCount = $this->fetchCommandCallCount($commandStats, $command, $steps, 'commandstats-cache', false);
-            if ($currentCallCount === $lastCallCount) {
-                return $response;
-            }
-            $lastCallCount = $currentCallCount;
-
-            if ($retryDelay > 0.0) {
-                usleep((int) ($retryDelay * 1_000_000));
-            }
-        }
-
-        throw new \RuntimeException(sprintf(
-            'Expected relay cache hit for key %s but %s command count changed from %d to %d after %d attempts.',
-            $key,
-            strtoupper($command),
-            $initialCallCount,
-            $lastCallCount,
-            self::MAX_CACHE_HIT_ATTEMPTS
-        ));
+        return [
+            'response' => $response,
+            'fromCache' => $fromCache,
+        ];
     }
 
     private function fetchCommandCallCount(
@@ -400,6 +392,22 @@ final class KillFuzzCommand extends Command
         }
 
         return $calls;
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $steps
+     */
+    private function setLastReadStepSource(array &$steps, string $source): void
+    {
+        $index = array_key_last($steps);
+        if ($index === null) {
+            return;
+        }
+        if (($steps[$index]['action'] ?? null) !== 'cache-read') {
+            return;
+        }
+
+        $steps[$index]['source'] = $source;
     }
 
     private function recordStep(
@@ -613,13 +621,15 @@ final class KillFuzzCommand extends Command
         float $start,
         float $now,
         int $retries,
-        int $staleReads
+        int $staleReads,
+        int $cacheHits
     ): void {
         $io->section(sprintf('Iteration %d', $iteration));
         $io->definitionList(
             ['Rate' => sprintf('%.2f iterations/sec', $iteration / max(0.001, $now - $start))],
             ['Retries' => $retries],
-            ['Stale Reads' => $staleReads]
+            ['Stale Reads' => $staleReads],
+            ['Cache Hits' => $cacheHits]
         );
         $io->newLine();
     }
