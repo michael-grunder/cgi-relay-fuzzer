@@ -50,7 +50,7 @@ final class KillFuzzCommand extends Command
             ->addOption('retry-delay', null, InputOption::VALUE_REQUIRED, 'Seconds to sleep between repeated relay reads', 0.01)
             ->addOption('value-size', null, InputOption::VALUE_REQUIRED, 'Maximum length of generated values', 48)
             ->addOption('kill-mode', null, InputOption::VALUE_REQUIRED, 'One of "client" or "worker"', self::KILL_MODE_CLIENT)
-            ->addOption('signal', null, InputOption::VALUE_REQUIRED, 'Signal to send when kill-mode=worker', 'SIGKILL')
+            ->addOption('signal', null, InputOption::VALUE_REQUIRED, 'Signal to send when kill-mode=worker', 'SIGTERM')
             ->addOption('failure-log', null, InputOption::VALUE_REQUIRED, 'Optional file/dir path for JSON failure logs')
             ->addOption('trace', null, InputOption::VALUE_NONE, 'Emit Redis ECHO lines for each HTTP request');
     }
