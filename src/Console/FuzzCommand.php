@@ -26,6 +26,7 @@ class FuzzCommand extends Command
             ->addOption('port', null, InputOption::VALUE_REQUIRED, 'Relay port to target', 8080)
             ->addOption('grace-period', null, InputOption::VALUE_REQUIRED, 'Time (sec) to wait for matching reads', 1.0)
             ->addOption('delay', null, InputOption::VALUE_REQUIRED, 'Delay (sec) between fuzz iterations', 0.0)
+            ->addOption('iterations', null, InputOption::VALUE_REQUIRED, 'Number of iterations to run (0 = infinite)', 0)
             ->addOption('kill', null, InputOption::VALUE_REQUIRED, 'Chance (0-100) to kill a Redis client per iteration', 0.0)
             ->addOption('flush', null, InputOption::VALUE_NONE, 'Allow commands that require FLUSHDB')
             ->addOption('del', null, InputOption::VALUE_NONE, 'Allow commands that perform DEL before writes')
@@ -44,6 +45,7 @@ class FuzzCommand extends Command
         $port = (int) $input->getOption('port');
         $grace = (float) $input->getOption('grace-period');
         $delay = (float) $input->getOption('delay');
+        $iterationLimit = max(0, (int) $input->getOption('iterations'));
         $kill = (float) $input->getOption('kill');
         $flush = (bool) $input->getOption('flush');
         $del = (bool) $input->getOption('del');
@@ -73,6 +75,7 @@ class FuzzCommand extends Command
             ['Members' => $mems],
             ['Grace Period' => sprintf('%.2f sec', $grace)],
             ['Delay' => sprintf('%.2f sec', $delay)],
+            ['Iteration Limit' => $iterationLimit === 0 ? 'Infinite' : $iterationLimit],
             ['Kill Chance' => sprintf('%.2f%%', $kill)],
             ['Trim Threshold' => $trim],
             ['FlushDB Commands' => $flush ? 'Enabled' : 'Disabled'],
@@ -93,7 +96,8 @@ class FuzzCommand extends Command
         $lastRedisResult = null;
         $lastRelayResult = null;
 
-        while (++$iteration) {
+        while ($iterationLimit === 0 || $iteration < $iterationLimit) {
+            $iteration++;
             if ($this->randChance($kill)) {
                 $kills += $clients->kill(null);
             }

@@ -14,8 +14,9 @@ bin/fuzzer --help
 ```
 
 Common flags include `--host`, `--port`, and `--kill` to control the target as
-well as `--show-last` to dump the last Redis/Relay payload every tick. You can
-inspect the available fuzz commands and their groupings via:
+well as `--iterations` to run a finite number of loops and `--show-last` to dump
+the last Redis/Relay payload every tick. You can inspect the available fuzz
+commands and their groupings via:
 
 ```
 bin/fuzzer --list-commands
@@ -31,6 +32,9 @@ a fuzzer are available: RNG seeds, per-iteration delays, controllable writer
 classes, value sizes, and configurable kill modes/signals. When stale data is
 observed you can point `--failure-log` at a file or directory to capture a full
 JSON log of every step.
+
+Run a finite number of deterministic iterations with `--iterations=N` (default
+of `0` keeps the loop running indefinitely).
 
 Example invocation that targets worker exits with SIGKILL and emits logs to the
 `var/log` directory:
