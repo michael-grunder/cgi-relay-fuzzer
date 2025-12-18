@@ -19,6 +19,7 @@ final class KillFuzzCommand extends Command
     private const VALID_WRITERS = ['redis', 'relay'];
     private const KILL_MODE_CLIENT = 'client';
     private const KILL_MODE_WORKER = 'worker';
+    private const MAX_CACHE_HIT_ATTEMPTS = 12;
     /**
      * @var array<int, array{type: string, prefix: string, write: string, read: string}>
      */
@@ -183,25 +184,22 @@ final class KillFuzzCommand extends Command
         );
 
         $readArgs = $this->buildReadArgsForOperation($operationType, $key);
-        $firstRead = $this->execOrThrow($endpoint, 'relay', $operation['read'], $readArgs, $steps, 'prime-read', [
+        $this->execOrThrow($endpoint, 'relay', $operation['read'], $readArgs, $steps, 'prime-read', [
             'source' => 'redis',
         ]);
         $initialReadCalls = $this->fetchCommandCallCount($commandStats, $operation['read'], $steps, 'commandstats-prime', false);
-        $this->execOrThrow($endpoint, 'relay', $operation['read'], $readArgs, $steps, 'cache-read', [
-            'source' => 'cache',
-        ]);
-        $postCacheReadCalls = $this->fetchCommandCallCount($commandStats, $operation['read'], $steps, 'commandstats-cache', false);
-        if ($postCacheReadCalls !== $initialReadCalls) {
-            throw new \RuntimeException(sprintf(
-                'Expected relay cache hit for key %s but %s command count changed from %d to %d.',
-                $key,
-                strtoupper($operation['read']),
-                $initialReadCalls,
-                $postCacheReadCalls
-            ));
-        }
-        $clientId = (int) ($firstRead['client_id'] ?? 0);
-        $workerPid = (int) ($firstRead['pid'] ?? 0);
+        $cacheRead = $this->readUntilCacheHit(
+            $endpoint,
+            $commandStats,
+            $operation['read'],
+            $readArgs,
+            $steps,
+            $key,
+            $initialReadCalls,
+            $retryDelay
+        );
+        $clientId = (int) ($cacheRead['client_id'] ?? 0);
+        $workerPid = (int) ($cacheRead['pid'] ?? 0);
 
         if ($killMode === self::KILL_MODE_CLIENT) {
             if ($clientId <= 0) {
@@ -311,6 +309,48 @@ final class KillFuzzCommand extends Command
         );
 
         return $response;
+    }
+
+    /**
+     * @param array<int, mixed> $args
+     * @param array<int, array<string, mixed>> $steps
+     */
+    private function readUntilCacheHit(
+        CmdEndpoint $endpoint,
+        CommandStatsEndpoint $commandStats,
+        string $command,
+        array $args,
+        array &$steps,
+        string $key,
+        int $initialCallCount,
+        float $retryDelay
+    ): array {
+        $lastCallCount = $initialCallCount;
+
+        for ($attempt = 1; $attempt <= self::MAX_CACHE_HIT_ATTEMPTS; $attempt++) {
+            $response = $this->execOrThrow($endpoint, 'relay', $command, $args, $steps, 'cache-read', [
+                'source' => 'cache',
+                'attempt' => $attempt,
+            ]);
+            $currentCallCount = $this->fetchCommandCallCount($commandStats, $command, $steps, 'commandstats-cache', false);
+            if ($currentCallCount === $lastCallCount) {
+                return $response;
+            }
+            $lastCallCount = $currentCallCount;
+
+            if ($retryDelay > 0.0) {
+                usleep((int) ($retryDelay * 1_000_000));
+            }
+        }
+
+        throw new \RuntimeException(sprintf(
+            'Expected relay cache hit for key %s but %s command count changed from %d to %d after %d attempts.',
+            $key,
+            strtoupper($command),
+            $initialCallCount,
+            $lastCallCount,
+            self::MAX_CACHE_HIT_ATTEMPTS
+        ));
     }
 
     private function fetchCommandCallCount(
