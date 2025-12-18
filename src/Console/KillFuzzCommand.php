@@ -6,6 +6,7 @@ namespace Mgrunder\Fuzzer\Console;
 
 use Mgrunder\Fuzzer\CmdEndpoint;
 use Mgrunder\Fuzzer\CommandStatsEndpoint;
+use Mgrunder\Fuzzer\Stats;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -49,7 +50,8 @@ final class KillFuzzCommand extends Command
             ->addOption('value-size', null, InputOption::VALUE_REQUIRED, 'Maximum length of generated values', 48)
             ->addOption('kill-mode', null, InputOption::VALUE_REQUIRED, 'One of "client" or "worker"', self::KILL_MODE_CLIENT)
             ->addOption('signal', null, InputOption::VALUE_REQUIRED, 'Signal to send when kill-mode=worker', 'SIGKILL')
-            ->addOption('failure-log', null, InputOption::VALUE_REQUIRED, 'Optional file/dir path for JSON failure logs');
+            ->addOption('failure-log', null, InputOption::VALUE_REQUIRED, 'Optional file/dir path for JSON failure logs')
+            ->addOption('trace', null, InputOption::VALUE_NONE, 'Emit Redis ECHO lines for each HTTP request');
     }
 
     protected function execute(InputInterface $input, OutputInterface $output): int
@@ -73,10 +75,19 @@ final class KillFuzzCommand extends Command
         $signal = $this->parseSignal($signalInput);
         $failureLog = $input->getOption('failure-log');
         $seed = $this->initializeSeed($input->getOption('seed'));
+        $traceEnabled = (bool) $input->getOption('trace');
 
         $redis = new \Redis(['host' => $redisHost, 'port' => $redisPort]);
         $endpoint = new CmdEndpoint($host, $port);
         $commandStats = new CommandStatsEndpoint($host, $port);
+        $relayStats = new Stats($host, $port);
+
+        if ($traceEnabled) {
+            $traceCallback = $this->createTraceCallback($redis);
+            $endpoint->setTraceCallback($traceCallback);
+            $commandStats->setTraceCallback($traceCallback);
+            $relayStats->setTraceCallback($traceCallback);
+        }
 
         $io->title('Relay deterministic kill fuzzer');
         $io->definitionList(
@@ -133,7 +144,25 @@ final class KillFuzzCommand extends Command
             }
 
             if (($now = microtime(true)) - $lastTick >= 1) {
-                $this->renderTick($io, $iteration, $start, $now, $retries, $staleReads, $cacheHits);
+                $statsSnapshot = $relayStats->exec([]);
+                $relayHits = (int) ($statsSnapshot['stats']['hits'] ?? 0);
+                $relayRequests = (int) ($statsSnapshot['stats']['requests'] ?? 0);
+                $relayMemoryUsed = (int) ($statsSnapshot['memory']['used'] ?? 0);
+                $relayMemoryTotal = (int) ($statsSnapshot['memory']['total'] ?? 0);
+
+                $this->renderTick(
+                    $io,
+                    $iteration,
+                    $start,
+                    $now,
+                    $retries,
+                    $staleReads,
+                    $cacheHits,
+                    $relayHits,
+                    $relayRequests,
+                    $relayMemoryUsed,
+                    $relayMemoryTotal
+                );
                 $lastTick = $now;
             }
 
@@ -285,6 +314,20 @@ final class KillFuzzCommand extends Command
             'expected' => $updatedValue,
             'observed' => $last['result'] ?? null,
         ];
+    }
+
+    /**
+     * @return callable(string):void
+     */
+    private function createTraceCallback(\Redis $redis): callable
+    {
+        return static function (string $uri) use ($redis): void {
+            try {
+                $redis->rawCommand('ECHO', sprintf('DEBUG: %s', $uri));
+            } catch (\Throwable) {
+                // Ignore tracing failures so the fuzzer keeps running.
+            }
+        };
     }
 
     private function execOrThrow(
@@ -622,14 +665,20 @@ final class KillFuzzCommand extends Command
         float $now,
         int $retries,
         int $staleReads,
-        int $cacheHits
+        int $cacheHits,
+        int $relayHits,
+        int $relayRequests,
+        int $relayMemoryUsed,
+        int $relayMemoryTotal
     ): void {
         $io->section(sprintf('Iteration %d', $iteration));
         $io->definitionList(
             ['Rate' => sprintf('%.2f iterations/sec', $iteration / max(0.001, $now - $start))],
             ['Retries' => $retries],
             ['Stale Reads' => $staleReads],
-            ['Cache Hits' => $cacheHits]
+            ['Cache Hits' => $cacheHits],
+            ['Relay Hits / Requests' => sprintf('%s / %s', number_format($relayHits), number_format($relayRequests))],
+            ['Relay Memory Used / Total' => sprintf('%s / %s bytes', number_format($relayMemoryUsed), number_format($relayMemoryTotal))]
         );
         $io->newLine();
     }
