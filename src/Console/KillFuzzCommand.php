@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Mgrunder\Fuzzer\Console;
 
 use Mgrunder\Fuzzer\CmdEndpoint;
+use Mgrunder\Fuzzer\CommandStatsEndpoint;
 use Symfony\Component\Console\Attribute\AsCommand;
 use Symfony\Component\Console\Command\Command;
 use Symfony\Component\Console\Input\InputInterface;
@@ -66,6 +67,7 @@ final class KillFuzzCommand extends Command
 
         $redis = new \Redis(['host' => $redisHost, 'port' => $redisPort]);
         $endpoint = new CmdEndpoint($host, $port);
+        $commandStats = new CommandStatsEndpoint($host, $port);
 
         $io->title('Relay deterministic kill fuzzer');
         $io->definitionList(
@@ -93,6 +95,7 @@ final class KillFuzzCommand extends Command
             $iteration++;
             $result = $this->runIteration(
                 $endpoint,
+                $commandStats,
                 $redis,
                 $writers,
                 $keyPrefix,
@@ -142,6 +145,7 @@ final class KillFuzzCommand extends Command
      */
     private function runIteration(
         CmdEndpoint $endpoint,
+        CommandStatsEndpoint $commandStats,
         \Redis $redis,
         array $writers,
         string $keyPrefix,
@@ -160,6 +164,17 @@ final class KillFuzzCommand extends Command
         $this->execOrThrow($endpoint, $initialWriter, 'set', [$key, $initialValue], $steps, 'write-initial');
 
         $firstRead = $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'prime-read');
+        $initialGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-prime');
+        $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'cache-read');
+        $postCacheGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-cache');
+        if ($postCacheGetCalls !== $initialGetCalls) {
+            throw new \RuntimeException(sprintf(
+                'Expected relay cache hit for key %s but GET command count changed from %d to %d.',
+                $key,
+                $initialGetCalls,
+                $postCacheGetCalls
+            ));
+        }
         $clientId = (int) ($firstRead['client_id'] ?? 0);
         $workerPid = (int) ($firstRead['pid'] ?? 0);
 
@@ -259,6 +274,52 @@ final class KillFuzzCommand extends Command
         );
 
         return $response;
+    }
+
+    private function fetchCommandCallCount(
+        CommandStatsEndpoint $endpoint,
+        string $command,
+        array &$steps,
+        string $action
+    ): int {
+        $stats = $endpoint->fetch();
+        if (($stats['status'] ?? null) === 'error') {
+            $message = sprintf('Command stats endpoint error: %s', $stats['error'] ?? 'unknown');
+            $this->recordStep($steps, $action, 'commandstats', 'commandstats', [$command], [
+                'response' => ['result' => null],
+                'error' => $message,
+            ]);
+            throw new \RuntimeException($message);
+        }
+
+        $normalized = strtolower($command);
+        if (!isset($stats[$normalized]) || !is_array($stats[$normalized])) {
+            $this->recordStep($steps, $action, 'commandstats', 'commandstats', [$normalized], [
+                'response' => ['result' => null],
+            ]);
+            throw new \RuntimeException(sprintf('Command stats missing entry for "%s".', $normalized));
+        }
+
+        $record = $stats[$normalized];
+        if (!array_key_exists('calls', $record)) {
+            $this->recordStep($steps, $action, 'commandstats', 'commandstats', [$normalized], [
+                'response' => ['result' => $record],
+            ]);
+            throw new \RuntimeException(sprintf('Command stats entry for "%s" is missing call count.', $normalized));
+        }
+
+        $calls = (int) $record['calls'];
+
+        $this->recordStep(
+            $steps,
+            $action,
+            'commandstats',
+            'commandstats',
+            [$normalized],
+            ['response' => ['result' => $calls]]
+        );
+
+        return $calls;
     }
 
     private function recordStep(
@@ -384,7 +445,7 @@ final class KillFuzzCommand extends Command
     {
         return match ($step['action'] ?? '') {
             'write-initial', 'write-updated' => 'write',
-            'prime-read', 'verify-read' => 'read',
+            'prime-read', 'verify-read', 'cache-read' => 'read',
             'kill-client', 'kill-worker' => 'kill',
             default => 'command',
         };
@@ -521,6 +582,7 @@ final class KillFuzzCommand extends Command
             'relay' => 'Relay',
             'redis' => 'Redis',
             'posix' => 'POSIX',
+            'commandstats' => 'Command Stats',
             default => ucfirst($normalized) ?: 'Unknown',
         };
     }
