@@ -19,6 +19,15 @@ final class KillFuzzCommand extends Command
     private const VALID_WRITERS = ['redis', 'relay'];
     private const KILL_MODE_CLIENT = 'client';
     private const KILL_MODE_WORKER = 'worker';
+    /**
+     * @var array<int, array{type: string, prefix: string, write: string, read: string}>
+     */
+    private const OPERATION_PROFILES = [
+        ['type' => 'string', 'prefix' => 'STRING', 'write' => 'set', 'read' => 'get'],
+        ['type' => 'set', 'prefix' => 'SET', 'write' => 'sadd', 'read' => 'smembers'],
+        ['type' => 'list', 'prefix' => 'LIST', 'write' => 'rpush', 'read' => 'lrange'],
+        ['type' => 'hash', 'prefix' => 'HASH', 'write' => 'hmset', 'read' => 'hgetall'],
+    ];
 
     private int $valueSequence = 0;
 
@@ -139,7 +148,7 @@ final class KillFuzzCommand extends Command
      *   staleReads: int,
      *   steps: array<int, array<string, mixed>>,
      *   key: string,
-     *   expected: string,
+     *   expected: mixed,
      *   observed: mixed,
      * }
      */
@@ -157,26 +166,38 @@ final class KillFuzzCommand extends Command
         float $retryDelay
     ): array {
         $steps = [];
-        $key = $this->pickKey($keyPrefix, $keyCount);
+        $operation = $this->pickOperationProfile();
+        $operationType = $operation['type'];
+        $key = $this->pickKey($keyPrefix, $keyCount, $operation['prefix']);
 
         $initialWriter = $writers[array_rand($writers)];
-        $initialValue = $this->nextValue($valueSize);
-        $this->execOrThrow($endpoint, $initialWriter, 'set', [$key, $initialValue], $steps, 'write-initial');
+        $initialValue = $this->generateOperationValue($operationType, $valueSize);
+        $this->execOrThrow($endpoint, $initialWriter, 'del', [$key], $steps, 'reset-initial');
+        $this->execOrThrow(
+            $endpoint,
+            $initialWriter,
+            $operation['write'],
+            $this->buildWriteArgsForOperation($operationType, $key, $initialValue),
+            $steps,
+            'write-initial'
+        );
 
-        $firstRead = $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'prime-read', [
+        $readArgs = $this->buildReadArgsForOperation($operationType, $key);
+        $firstRead = $this->execOrThrow($endpoint, 'relay', $operation['read'], $readArgs, $steps, 'prime-read', [
             'source' => 'redis',
         ]);
-        $initialGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-prime', false);
-        $this->execOrThrow($endpoint, 'relay', 'get', [$key], $steps, 'cache-read', [
+        $initialReadCalls = $this->fetchCommandCallCount($commandStats, $operation['read'], $steps, 'commandstats-prime', false);
+        $this->execOrThrow($endpoint, 'relay', $operation['read'], $readArgs, $steps, 'cache-read', [
             'source' => 'cache',
         ]);
-        $postCacheGetCalls = $this->fetchCommandCallCount($commandStats, 'get', $steps, 'commandstats-cache', false);
-        if ($postCacheGetCalls !== $initialGetCalls) {
+        $postCacheReadCalls = $this->fetchCommandCallCount($commandStats, $operation['read'], $steps, 'commandstats-cache', false);
+        if ($postCacheReadCalls !== $initialReadCalls) {
             throw new \RuntimeException(sprintf(
-                'Expected relay cache hit for key %s but GET command count changed from %d to %d.',
+                'Expected relay cache hit for key %s but %s command count changed from %d to %d.',
                 $key,
-                $initialGetCalls,
-                $postCacheGetCalls
+                strtoupper($operation['read']),
+                $initialReadCalls,
+                $postCacheReadCalls
             ));
         }
         $clientId = (int) ($firstRead['client_id'] ?? 0);
@@ -196,9 +217,21 @@ final class KillFuzzCommand extends Command
             $this->recordStep($steps, 'kill-worker', 'posix', 'kill', [$workerPid, $signal], ['result' => $killSuccess]);
         }
 
-        $updatedValue = $this->nextValue($valueSize);
+        $updatedValue = $this->generateOperationValue($operationType, $valueSize);
+        $expectedNormalized = $this->normalizeOperationValue($operationType, $updatedValue);
+        if ($expectedNormalized === null) {
+            throw new \RuntimeException(sprintf('Unable to normalize expected value for operation "%s".', $operationType));
+        }
         $nextWriter = $writers[array_rand($writers)];
-        $this->execOrThrow($endpoint, $nextWriter, 'set', [$key, $updatedValue], $steps, 'write-updated');
+        $this->execOrThrow($endpoint, $nextWriter, 'del', [$key], $steps, 'reset-updated');
+        $this->execOrThrow(
+            $endpoint,
+            $nextWriter,
+            $operation['write'],
+            $this->buildWriteArgsForOperation($operationType, $key, $updatedValue),
+            $steps,
+            'write-updated'
+        );
 
         $retries = 0;
         $staleReads = 0;
@@ -209,13 +242,13 @@ final class KillFuzzCommand extends Command
             $last = $this->execOrThrow(
                 $endpoint,
                 'relay',
-                'get',
-                [$key],
+                $operation['read'],
+                $readArgs,
                 $steps,
                 'verify-read',
                 ['attempt' => $retries + 1]
             );
-            if (($last['result'] ?? null) === $updatedValue) {
+            if ($this->valuesMatch($operationType, $last['result'] ?? null, $expectedNormalized)) {
                 return [
                     'success' => true,
                     'retries' => $retries,
@@ -346,9 +379,172 @@ final class KillFuzzCommand extends Command
         ], $extra);
     }
 
-    private function pickKey(string $prefix, int $count): string
+    private function pickKey(string $prefix, int $count, string $typePrefix): string
     {
-        return sprintf('%s:%d', $prefix, mt_rand(1, $count));
+        $parts = [];
+        if ($typePrefix !== '') {
+            $parts[] = $typePrefix;
+        }
+        if ($prefix !== '') {
+            $parts[] = $prefix;
+        }
+        $base = $parts === [] ? 'key' : implode(':', $parts);
+
+        return sprintf('%s:%d', $base, mt_rand(1, $count));
+    }
+
+    /**
+     * @return array{type: string, prefix: string, write: string, read: string}
+     */
+    private function pickOperationProfile(): array
+    {
+        $index = array_rand(self::OPERATION_PROFILES);
+
+        return self::OPERATION_PROFILES[$index];
+    }
+
+    private function generateOperationValue(string $type, int $valueSize): mixed
+    {
+        return match ($type) {
+            'string' => $this->nextValue($valueSize),
+            'set' => $this->generateCollectionValues($valueSize, 1, 4),
+            'list' => $this->generateCollectionValues($valueSize, 1, 4),
+            'hash' => $this->generateHashValues($valueSize, 2, 4),
+            default => throw new \InvalidArgumentException(sprintf('Unknown operation type "%s".', $type)),
+        };
+    }
+
+    /**
+     * @return array<int, string>
+     */
+    private function generateCollectionValues(int $valueSize, int $min, int $max): array
+    {
+        if ($max < $min) {
+            $max = $min;
+        }
+        $count = mt_rand($min, $max);
+        $values = [];
+
+        for ($i = 0; $i < $count; $i++) {
+            $values[] = $this->nextValue($valueSize);
+        }
+
+        return $values;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function generateHashValues(int $valueSize, int $min, int $max): array
+    {
+        if ($max < $min) {
+            $max = $min;
+        }
+        $count = mt_rand($min, $max);
+        $hash = [];
+
+        for ($i = 1; $i <= $count; $i++) {
+            $hash[sprintf('field:%d', $i)] = $this->nextValue($valueSize);
+        }
+
+        return $hash;
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function buildWriteArgsForOperation(string $type, string $key, mixed $value): array
+    {
+        return match ($type) {
+            'string' => [$key, (string) $value],
+            'set', 'list' => array_merge([$key], array_values((array) $value)),
+            'hash' => [$key, $value],
+            default => throw new \InvalidArgumentException(sprintf('Unknown operation type "%s".', $type)),
+        };
+    }
+
+    /**
+     * @return array<int, mixed>
+     */
+    private function buildReadArgsForOperation(string $type, string $key): array
+    {
+        return match ($type) {
+            'list' => [$key, 0, -1],
+            default => [$key],
+        };
+    }
+
+    private function valuesMatch(string $type, mixed $observed, mixed $expectedNormalized): bool
+    {
+        $normalized = $this->normalizeOperationValue($type, $observed);
+        if ($normalized === null) {
+            return false;
+        }
+
+        return $normalized === $expectedNormalized;
+    }
+
+    private function normalizeOperationValue(string $type, mixed $value): mixed
+    {
+        return match ($type) {
+            'string' => is_string($value) ? $value : null,
+            'set' => $this->normalizeSetValue($value),
+            'list' => $this->normalizeListValue($value),
+            'hash' => $this->normalizeHashValue($value),
+            default => null,
+        };
+    }
+
+    /**
+     * @return array<int, string>|null
+     */
+    private function normalizeSetValue(mixed $value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
+        }
+
+        $normalized = array_map(
+            static fn ($item): string => is_string($item) ? $item : (string) $item,
+            array_values($value)
+        );
+        sort($normalized, SORT_STRING);
+
+        return $normalized;
+    }
+
+    /**
+     * @return array<int, string>|null
+     */
+    private function normalizeListValue(mixed $value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
+        }
+
+        return array_map(
+            static fn ($item): string => is_string($item) ? $item : (string) $item,
+            array_values($value)
+        );
+    }
+
+    /**
+     * @return array<string, string>|null
+     */
+    private function normalizeHashValue(mixed $value): ?array
+    {
+        if (!is_array($value)) {
+            return null;
+        }
+
+        $normalized = [];
+        foreach ($value as $field => $item) {
+            $normalized[(string) $field] = is_string($item) ? $item : (string) $item;
+        }
+
+        ksort($normalized, SORT_STRING);
+
+        return $normalized;
     }
 
     private function nextValue(int $size): string
@@ -451,7 +647,7 @@ final class KillFuzzCommand extends Command
     private function categorizeStep(array $step): string
     {
         return match ($step['action'] ?? '') {
-            'write-initial', 'write-updated' => 'write',
+            'write-initial', 'write-updated', 'reset-initial', 'reset-updated' => 'write',
             'prime-read', 'verify-read', 'cache-read' => 'read',
             'kill-client', 'kill-worker' => 'kill',
             default => 'command',
@@ -481,12 +677,7 @@ final class KillFuzzCommand extends Command
         $response = is_array($step['response'] ?? null) ? $step['response'] : [];
 
         return match ($category) {
-            'write' => sprintf(
-                '%s %s => %s',
-                $command,
-                $this->formatValue($args[0] ?? null),
-                $this->formatValue($args[1] ?? null)
-            ),
+            'write' => $this->describeWriteCommand($command, $args),
             'read' => sprintf(
                 '%s %s => %s',
                 $command,
@@ -519,6 +710,32 @@ final class KillFuzzCommand extends Command
         }
 
         return $command;
+    }
+
+    /**
+     * @param array<int, mixed> $args
+     */
+    private function describeWriteCommand(string $command, array $args): string
+    {
+        $key = $this->formatValue($args[0] ?? null);
+        $value = $this->formatWriteValueForDisplay($command, $args);
+
+        return sprintf('%s %s => %s', $command, $key, $value);
+    }
+
+    /**
+     * @param array<int, mixed> $args
+     */
+    private function formatWriteValueForDisplay(string $command, array $args): string
+    {
+        $upper = strtoupper($command);
+
+        return match (true) {
+            $upper === 'DEL' => '[n/a]',
+            in_array($upper, ['SADD', 'RPUSH'], true) => $this->formatValue(array_slice($args, 1)),
+            $upper === 'HMSET' => $this->formatValue($args[1] ?? null),
+            default => $this->formatValue($args[1] ?? null),
+        };
     }
 
     /**
