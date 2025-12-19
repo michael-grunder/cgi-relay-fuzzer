@@ -1,0 +1,373 @@
+#!../sapi/cli/php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Helper to fetch Relay cached keys and render the entries as a table.
+ */
+final class KeysClient
+{
+    private string $baseUrl;
+    private float $timeout;
+
+    public function __construct(array $options)
+    {
+        $this->timeout = (float) $options['timeout'];
+
+        if ($options['url'] !== null) {
+            $this->baseUrl = rtrim($options['url'], '&?');
+            return;
+        }
+
+        $path = $options['path'];
+        if ($path === '' || $path[0] !== '/') {
+            $path = '/' . $path;
+        }
+
+        $this->baseUrl = sprintf(
+            '%s://%s:%d%s',
+            $options['scheme'],
+            $options['host'],
+            $options['port'],
+            $path
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function fetch(): array
+    {
+        $url = $this->baseUrl;
+
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'timeout' => $this->timeout,
+                'ignore_errors' => true,
+                'header' => [
+                    'Accept: application/json',
+                ],
+            ],
+        ]);
+
+        $body = @file_get_contents($url, false, $context);
+        if ($body === false || !isset($http_response_header)) {
+            fwrite(STDERR, sprintf("Request failed when contacting %s\n", $url));
+            exit(1);
+        }
+
+        $status = $this->extractStatusCode($http_response_header[0] ?? '');
+        if ($status >= 400) {
+            fwrite(STDERR, sprintf("Endpoint responded with HTTP %d\n", $status));
+            exit(1);
+        }
+
+        $data = json_decode($body, true);
+        if (!is_array($data)) {
+            fwrite(STDERR, "Failed to decode JSON response.\n");
+            exit(1);
+        }
+
+        return $data;
+    }
+
+    private function extractStatusCode(string $statusLine): int
+    {
+        if (preg_match('{HTTP/\\S+\\s+(\\d+)}', $statusLine, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return 0;
+    }
+}
+
+final class KeysCli
+{
+    private const DEFAULT_OPTIONS = [
+        'url' => null,
+        'scheme' => 'http',
+        'host' => '127.0.0.1',
+        'port' => 8080,
+        'path' => '/keys.php',
+        'timeout' => 5.0,
+    ];
+
+    public function run(array $argv): void
+    {
+        array_shift($argv);
+
+        $options = self::DEFAULT_OPTIONS;
+        $this->parseOptions($argv, $options);
+
+        $data = (new KeysClient($options))->fetch();
+        $this->printTable($data);
+    }
+
+    private function parseOptions(array &$argv, array &$options): void
+    {
+        while ($argv !== [] && $argv[0] !== '--' && str_starts_with($argv[0], '--')) {
+            $arg = array_shift($argv);
+            $value = null;
+
+            if (str_contains($arg, '=')) {
+                [$arg, $value] = explode('=', (string) $arg, 2);
+            }
+
+            switch ($arg) {
+                case '--help':
+                    $this->printHelp();
+                    exit(0);
+                case '--url':
+                    $options['url'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--scheme':
+                    $options['scheme'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--host':
+                    $options['host'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--port':
+                    $options['port'] = (int) $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--path':
+                    $options['path'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--timeout':
+                    $options['timeout'] = (float) $this->requireValue($arg, $value, $argv);
+                    break;
+                default:
+                    $this->usage(sprintf('Unknown option: %s', $arg));
+            }
+        }
+
+        if ($argv !== [] && $argv[0] === '--') {
+            array_shift($argv);
+        }
+    }
+
+    private function requireValue(string $option, ?string $value, array &$argv): string
+    {
+        if ($value === null) {
+            if ($argv === []) {
+                $this->usage(sprintf('Missing value for %s.', $option));
+            }
+
+            $value = array_shift($argv);
+        }
+
+        return $value;
+    }
+
+    private function usage(string $message): void
+    {
+        fwrite(STDERR, $message . PHP_EOL);
+        $this->printHelp();
+        exit(1);
+    }
+
+    private function printHelp(): void
+    {
+        $help = <<<HELP
+Usage:
+  bin/keys [options]
+
+Options:
+  --host <host>        Defaults to 127.0.0.1
+  --port <port>        Defaults to 8080
+  --path <path>        Defaults to /keys.php
+  --scheme <scheme>    Defaults to http
+  --url <url>          Override the full base URL
+  --timeout <seconds>  HTTP timeout, defaults to 5 seconds
+  --help               Display this help
+HELP;
+
+        fwrite(STDERR, $help . PHP_EOL);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function printTable(array $data): void
+    {
+        $rows = $this->buildRows($data);
+
+        if ($rows === []) {
+            echo "No cached keys found.\n";
+            return;
+        }
+
+        $widths = $this->calculateWidths($rows);
+        $this->printHeader($widths);
+
+        $lastKey = null;
+        foreach ($rows as $row) {
+            $displayKey = $row['key'] === $lastKey ? '' : $row['key'];
+            printf(
+                "%-{$widths['key']}s  %-{$widths['type']}s  %{$widths['len']}s  %{$widths['owner']}s  %{$widths['generation']}s\n",
+                $displayKey,
+                $row['type'],
+                $row['len'],
+                $row['owner'],
+                $row['generation']
+            );
+            $lastKey = $row['key'];
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<int, array{key: string, type: string, len: string, owner: string, generation: string}>
+     */
+    private function buildRows(array $data): array
+    {
+        $rows = [];
+
+        foreach ($data as $key => $entries) {
+            $entryList = $this->normalizeEntries($entries);
+            if ($entryList === []) {
+                $rows[] = [
+                    'key' => (string) $key,
+                    'type' => '',
+                    'len' => '',
+                    'owner' => '',
+                    'generation' => '',
+                ];
+                continue;
+            }
+
+            foreach ($entryList as $entry) {
+                $rows[] = [
+                    'key' => (string) $key,
+                    'type' => isset($entry['type']) ? (string) $entry['type'] : '',
+                    'len' => $this->formatLength($entry),
+                    'owner' => $this->extractLeaseValue($entry, 'id'),
+                    'generation' => $this->extractLeaseValue($entry, 'generation'),
+                ];
+            }
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @return array<int, array<string, mixed>>
+     */
+    private function normalizeEntries(mixed $entries): array
+    {
+        if (!is_array($entries)) {
+            return [];
+        }
+
+        if ($this->looksLikeEntry($entries)) {
+            return [$entries];
+        }
+
+        $normalized = [];
+        foreach ($entries as $entry) {
+            if (is_array($entry)) {
+                $normalized[] = $entry;
+            }
+        }
+
+        return $normalized;
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function looksLikeEntry(array $entry): bool
+    {
+        return array_key_exists('type', $entry)
+            || array_key_exists('local-len', $entry)
+            || array_key_exists('remote-len', $entry)
+            || array_key_exists('lease', $entry);
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function formatLength(array $entry): string
+    {
+        $local = array_key_exists('local-len', $entry) ? (string) $entry['local-len'] : null;
+        $remote = array_key_exists('remote-len', $entry) ? (string) $entry['remote-len'] : null;
+        $size = array_key_exists('size', $entry) ? (string) $entry['size'] : null;
+
+        if ($local !== null && $remote !== null) {
+            return sprintf('%s/%s', $local, $remote);
+        }
+
+        if ($local !== null) {
+            return $local;
+        }
+
+        if ($remote !== null) {
+            return $remote;
+        }
+
+        return $size ?? '';
+    }
+
+    /**
+     * @param array<string, mixed> $entry
+     */
+    private function extractLeaseValue(array $entry, string $key): string
+    {
+        $lease = $entry['lease'] ?? null;
+        if (is_array($lease) && isset($lease[$key])) {
+            return (string) $lease[$key];
+        }
+
+        return '';
+    }
+
+    /**
+     * @param array<int, array{key: string, type: string, len: string, owner: string, generation: string}> $rows
+     * @return array<string, int>
+     */
+    private function calculateWidths(array $rows): array
+    {
+        $widths = [
+            'key' => strlen('KEY'),
+            'type' => strlen('TYPE'),
+            'len' => strlen('LEN'),
+            'owner' => strlen('OWNER'),
+            'generation' => strlen('GENERATION'),
+        ];
+
+        foreach ($rows as $row) {
+            foreach ($widths as $column => $width) {
+                $widths[$column] = max($width, strlen($row[$column]));
+            }
+        }
+
+        return $widths;
+    }
+
+    /**
+     * @param array<string, int> $widths
+     */
+    private function printHeader(array $widths): void
+    {
+        printf(
+            "%-{$widths['key']}s  %-{$widths['type']}s  %{$widths['len']}s  %{$widths['owner']}s  %{$widths['generation']}s\n",
+            'KEY',
+            'TYPE',
+            'LEN',
+            'OWNER',
+            'GENERATION'
+        );
+
+        printf(
+            "%s  %s  %s  %s  %s\n",
+            str_repeat('-', $widths['key']),
+            str_repeat('-', $widths['type']),
+            str_repeat('-', $widths['len']),
+            str_repeat('-', $widths['owner']),
+            str_repeat('-', $widths['generation'])
+        );
+    }
+}
+
+(new KeysCli())->run($argv);
