@@ -1,0 +1,296 @@
+#!../sapi/cli/php
+<?php
+
+declare(strict_types=1);
+
+/**
+ * Helper to fetch Relay leases and render the entries as a table.
+ */
+final class LeasesClient
+{
+    private string $baseUrl;
+    private float $timeout;
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    public function __construct(array $options)
+    {
+        $this->timeout = (float) $options['timeout'];
+
+        if ($options['url'] !== null) {
+            $this->baseUrl = rtrim((string) $options['url'], '&?');
+            return;
+        }
+
+        $path = (string) $options['path'];
+        if ($path === '' || $path[0] !== '/') {
+            $path = '/' . $path;
+        }
+
+        $this->baseUrl = sprintf(
+            '%s://%s:%d%s',
+            $options['scheme'],
+            $options['host'],
+            $options['port'],
+            $path
+        );
+    }
+
+    /**
+     * @return array<string, mixed>
+     */
+    public function fetch(): array
+    {
+        $context = stream_context_create([
+            'http' => [
+                'method' => 'GET',
+                'timeout' => $this->timeout,
+                'ignore_errors' => true,
+                'header' => [
+                    'Accept: application/json',
+                ],
+            ],
+        ]);
+
+        $body = @file_get_contents($this->baseUrl, false, $context);
+        if ($body === false || !isset($http_response_header)) {
+            fwrite(STDERR, sprintf("Request failed when contacting %s\n", $this->baseUrl));
+            exit(1);
+        }
+
+        $status = $this->extractStatusCode($http_response_header[0] ?? '');
+        if ($status >= 400) {
+            fwrite(STDERR, sprintf("Endpoint responded with HTTP %d\n", $status));
+            exit(1);
+        }
+
+        $data = json_decode($body, true);
+        if (!is_array($data)) {
+            fwrite(STDERR, "Failed to decode JSON response.\n");
+            exit(1);
+        }
+
+        return $data;
+    }
+
+    private function extractStatusCode(string $statusLine): int
+    {
+        if (preg_match('{HTTP/\\S+\\s+(\\d+)}', $statusLine, $matches) === 1) {
+            return (int) $matches[1];
+        }
+
+        return 0;
+    }
+}
+
+final class LeasesCli
+{
+    private const DEFAULT_OPTIONS = [
+        'url' => null,
+        'scheme' => 'http',
+        'host' => '127.0.0.1',
+        'port' => 8080,
+        'path' => '/leases.php',
+        'timeout' => 5.0,
+    ];
+
+    public function run(array $argv): void
+    {
+        array_shift($argv);
+
+        $options = self::DEFAULT_OPTIONS;
+        $this->parseOptions($argv, $options);
+
+        $data = (new LeasesClient($options))->fetch();
+        $this->printTable($data);
+    }
+
+    /**
+     * @param array<string, mixed> $options
+     */
+    private function parseOptions(array &$argv, array &$options): void
+    {
+        while ($argv !== [] && $argv[0] !== '--' && str_starts_with((string) $argv[0], '--')) {
+            $arg = (string) array_shift($argv);
+            $value = null;
+
+            if (str_contains($arg, '=')) {
+                [$arg, $value] = explode('=', $arg, 2);
+            }
+
+            switch ($arg) {
+                case '--help':
+                    $this->printHelp();
+                    exit(0);
+                case '--url':
+                    $options['url'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--scheme':
+                    $options['scheme'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--host':
+                    $options['host'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--port':
+                    $options['port'] = (int) $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--path':
+                    $options['path'] = $this->requireValue($arg, $value, $argv);
+                    break;
+                case '--timeout':
+                    $options['timeout'] = (float) $this->requireValue($arg, $value, $argv);
+                    break;
+                default:
+                    $this->usage(sprintf('Unknown option: %s', $arg));
+            }
+        }
+
+        if ($argv !== [] && $argv[0] === '--') {
+            array_shift($argv);
+        }
+    }
+
+    private function requireValue(string $option, ?string $value, array &$argv): string
+    {
+        if ($value === null) {
+            if ($argv === []) {
+                $this->usage(sprintf('Missing value for %s.', $option));
+            }
+
+            $value = (string) array_shift($argv);
+        }
+
+        return $value;
+    }
+
+    private function usage(string $message): void
+    {
+        fwrite(STDERR, $message . PHP_EOL);
+        $this->printHelp();
+        exit(1);
+    }
+
+    private function printHelp(): void
+    {
+        $help = <<<HELP
+Usage:
+  bin/leases [options]
+
+Options:
+  --host <host>        Defaults to 127.0.0.1
+  --port <port>        Defaults to 8080
+  --path <path>        Defaults to /leases.php
+  --scheme <scheme>    Defaults to http
+  --url <url>          Override the full base URL
+  --timeout <seconds>  HTTP timeout, defaults to 5 seconds
+  --help               Display this help
+HELP;
+
+        fwrite(STDERR, $help . PHP_EOL);
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     */
+    private function printTable(array $data): void
+    {
+        $rows = $this->buildRows($data);
+
+        if ($rows === []) {
+            echo "No active leases found.\n";
+            return;
+        }
+
+        $widths = $this->calculateWidths($rows);
+        $this->printHeader($widths);
+
+        foreach ($rows as $row) {
+            printf(
+                "%-{$widths['id']}s  %{$widths['pid']}s  %{$widths['generation']}s\n",
+                $row['id'],
+                $row['pid'],
+                $row['generation']
+            );
+        }
+    }
+
+    /**
+     * @param array<string, mixed> $data
+     * @return array<int, array{id: string, pid: string, generation: string}>
+     */
+    private function buildRows(array $data): array
+    {
+        if ($data === []) {
+            return [];
+        }
+
+        $rows = [];
+
+        uksort($data, static function ($a, $b): int {
+            return (int) $a <=> (int) $b;
+        });
+
+        foreach ($data as $id => $details) {
+            $rows[] = [
+                'id' => (string) $id,
+                'pid' => $this->extractValue($details, 'pid'),
+                'generation' => $this->extractValue($details, 'generation'),
+            ];
+        }
+
+        return $rows;
+    }
+
+    /**
+     * @param array<int, array{id: string, pid: string, generation: string}> $rows
+     * @return array<string, int>
+     */
+    private function calculateWidths(array $rows): array
+    {
+        $widths = [
+            'id' => strlen('ID'),
+            'pid' => strlen('PID'),
+            'generation' => strlen('GENERATION'),
+        ];
+
+        foreach ($rows as $row) {
+            foreach ($widths as $column => $width) {
+                $widths[$column] = max($width, strlen($row[$column]));
+            }
+        }
+
+        return $widths;
+    }
+
+    /**
+     * @param array<string, int> $widths
+     */
+    private function printHeader(array $widths): void
+    {
+        printf(
+            "%-{$widths['id']}s  %{$widths['pid']}s  %{$widths['generation']}s\n",
+            'ID',
+            'PID',
+            'GENERATION'
+        );
+
+        printf(
+            "%s  %s  %s\n",
+            str_repeat('-', $widths['id']),
+            str_repeat('-', $widths['pid']),
+            str_repeat('-', $widths['generation'])
+        );
+    }
+
+    private function extractValue(mixed $details, string $key): string
+    {
+        if (is_array($details) && isset($details[$key])) {
+            return (string) $details[$key];
+        }
+
+        return '';
+    }
+}
+
+(new LeasesCli())->run($argv);
