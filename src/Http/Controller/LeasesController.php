@@ -20,6 +20,6 @@ final class LeasesController
             );
         }
 
-        return JsonResponseFactory::payload(\Relay\Relay::leases());
+        return JsonResponseFactory::payload(\Relay\Relay::leases(true));
     }
 }

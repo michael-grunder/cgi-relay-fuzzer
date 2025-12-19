@@ -206,6 +206,9 @@ HELP;
         $this->printHeader($widths);
 
         foreach ($rows as $row) {
+            if ($row['pid'] == 0 && $row['generation'] == 0)
+                continue;
+
             printf(
                 "%-{$widths['id']}s  %{$widths['pid']}s  %{$widths['generation']}s\n",
                 $row['id'],
